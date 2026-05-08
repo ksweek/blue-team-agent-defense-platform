@@ -393,5 +393,4 @@ if ($frontendPort -ne 5173) {
 }
 if (-not $aiReady) {
     Write-Host "Real model execution is not ready. Fill AI_PROVIDER / AI_BASE_URL / AI_API_KEY / AI_MODEL in .env." -ForegroundColor Yellow
-    Write-Host "Quick check: python .\\test_ai_provider.py" -ForegroundColor Yellow
 }
