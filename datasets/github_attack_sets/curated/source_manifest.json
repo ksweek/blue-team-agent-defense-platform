@@ -1,0 +1,103 @@
+{
+  "sources": [
+    {
+      "repo": "verazuo/jailbreak_llms",
+      "url": "https://github.com/verazuo/jailbreak_llms",
+      "local_files": [
+        "raw/verazuo_jailbreak_llms/jailbreak_prompts_2023_12_25.csv",
+        "raw/verazuo_jailbreak_llms/forbidden_question_set.csv",
+        "raw/verazuo_jailbreak_llms/README.md"
+      ],
+      "mapped_sections": [
+        "直接 Prompt Injection",
+        "多轮上下文污染",
+        "组合攻击链"
+      ]
+    },
+    {
+      "repo": "cyberark/FuzzyAI",
+      "url": "https://github.com/cyberark/FuzzyAI",
+      "local_files": [
+        "raw/cyberark_fuzzyai/adv_prompts.txt",
+        "raw/cyberark_fuzzyai/adv_suffixes.txt",
+        "raw/cyberark_fuzzyai/pandoras_prompts.txt",
+        "raw/cyberark_fuzzyai/harmful_behaviors.csv",
+        "raw/cyberark_fuzzyai/persuasion_taxonomy.jsonl",
+        "raw/cyberark_fuzzyai/Jailbreaks.md"
+      ],
+      "mapped_sections": [
+        "直接 Prompt Injection",
+        "审批绕过与社会工程测试",
+        "组合攻击链"
+      ]
+    },
+    {
+      "repo": "promptfoo/promptfoo",
+      "url": "https://github.com/promptfoo/promptfoo",
+      "local_files": [
+        "raw/promptfoo/redteam-rag/redteam.yaml",
+        "raw/promptfoo/redteam-rag/promptfooconfig.yaml",
+        "raw/promptfoo/redteam-coding-agent/README.md",
+        "raw/promptfoo/redteam-coding-agent/promptfooconfig.yaml",
+        "raw/promptfoo/redteam-bestOfN-strategy/promptfooconfig.yaml",
+        "raw/promptfoo/redteam-xstest/promptfooconfig.yaml",
+        "raw/promptfoo/redteam-indirect-web-pwn/promptfooconfig.yaml"
+      ],
+      "mapped_sections": [
+        "受保护路径、技能、插件测试",
+        "间接 Prompt Injection",
+        "多轮上下文污染",
+        "输出泄露与脱敏测试",
+        "组合攻击链"
+      ]
+    },
+    {
+      "repo": "NVIDIA/garak",
+      "url": "https://github.com/NVIDIA/garak",
+      "local_files": [
+        "raw/nvidia_garak/goodside.py",
+        "raw/nvidia_garak/web_injection.py",
+        "raw/nvidia_garak/leakreplay.py",
+        "raw/nvidia_garak/promptinject.py"
+      ],
+      "mapped_sections": [
+        "间接 Prompt Injection",
+        "输出泄露与脱敏测试"
+      ]
+    },
+    {
+      "repo": "preambleai/prompt-injector",
+      "url": "https://github.com/preambleai/prompt-injector",
+      "local_files": [
+        "raw/preambleai_prompt_injector/benchmark-integration.ts",
+        "raw/preambleai_prompt_injector/agent-framework-testing.ts",
+        "raw/preambleai_prompt_injector/ai-red-teaming.ts",
+        "raw/preambleai_prompt_injector/application-specific-testing.ts",
+        "raw/preambleai_prompt_injector/all-attack-payloads.json",
+        "raw/preambleai_prompt_injector/payload-manager.ts",
+        "raw/preambleai_prompt_injector/prompt-injection-dataset.ts"
+      ],
+      "mapped_sections": [
+        "未授权工具调用",
+        "受保护路径、技能、插件测试",
+        "间接 Prompt Injection",
+        "多轮上下文污染",
+        "输出泄露与脱敏测试",
+        "组合攻击链"
+      ]
+    },
+    {
+      "repo": "JailbreakBench/jailbreakbench",
+      "url": "https://github.com/JailbreakBench/jailbreakbench",
+      "local_files": [
+        "raw/jailbreakbench/llama2.json",
+        "raw/jailbreakbench/vicuna.json",
+        "raw/jailbreakbench/dataset.py"
+      ],
+      "mapped_sections": [
+        "直接 Prompt Injection",
+        "组合攻击链"
+      ]
+    }
+  ]
+}

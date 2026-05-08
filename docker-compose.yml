@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: blue-team-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-blue_team}
+      POSTGRES_USER: ${POSTGRES_USER:-blue_team}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-blue_team_pw}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-blue_team} -d ${POSTGRES_DB:-blue_team}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+    container_name: blue-team-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://blue_team:blue_team_pw@postgres:5432/blue_team}
+      DATABASE_ECHO: ${DATABASE_ECHO:-false}
+      DATABASE_POOL_PRE_PING: ${DATABASE_POOL_PRE_PING:-true}
+      JWT_SECRET: ${JWT_SECRET:-blue-team-compose-secret}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-480}
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-60}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-1200}
+      TASK_WORKER_EMBEDDED: ${TASK_WORKER_EMBEDDED:-true}
+      TASK_WORKER_CONCURRENCY: ${TASK_WORKER_CONCURRENCY:-1}
+      TASK_WORKER_POLL_INTERVAL: ${TASK_WORKER_POLL_INTERVAL:-0.5}
+      TASK_WORKER_RECOVERY_LIMIT: ${TASK_WORKER_RECOVERY_LIMIT:-200}
+      TASK_WORKER_HEARTBEAT_INTERVAL: ${TASK_WORKER_HEARTBEAT_INTERVAL:-5}
+      TASK_WORKER_STALE_SECONDS: ${TASK_WORKER_STALE_SECONDS:-180}
+      TASK_WORKER_RETRY_DELAY_SECONDS: ${TASK_WORKER_RETRY_DELAY_SECONDS:-10}
+      TASK_WORKER_MAX_ATTEMPTS: ${TASK_WORKER_MAX_ATTEMPTS:-3}
+    volumes:
+      - ./backend/data:/app/data
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ./backend
+    container_name: blue-team-worker
+    profiles:
+      - external-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://blue_team:blue_team_pw@postgres:5432/blue_team}
+      DATABASE_ECHO: ${DATABASE_ECHO:-false}
+      DATABASE_POOL_PRE_PING: ${DATABASE_POOL_PRE_PING:-true}
+      JWT_SECRET: ${JWT_SECRET:-blue-team-compose-secret}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-480}
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-60}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-1200}
+      TASK_WORKER_EMBEDDED: false
+      TASK_WORKER_CONCURRENCY: ${TASK_WORKER_CONCURRENCY:-1}
+      TASK_WORKER_POLL_INTERVAL: ${TASK_WORKER_POLL_INTERVAL:-0.5}
+      TASK_WORKER_RECOVERY_LIMIT: ${TASK_WORKER_RECOVERY_LIMIT:-200}
+      TASK_WORKER_HEARTBEAT_INTERVAL: ${TASK_WORKER_HEARTBEAT_INTERVAL:-5}
+      TASK_WORKER_STALE_SECONDS: ${TASK_WORKER_STALE_SECONDS:-180}
+      TASK_WORKER_RETRY_DELAY_SECONDS: ${TASK_WORKER_RETRY_DELAY_SECONDS:-10}
+      TASK_WORKER_MAX_ATTEMPTS: ${TASK_WORKER_MAX_ATTEMPTS:-3}
+    command: ["python", "run_worker.py"]
+    volumes:
+      - ./backend/data:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
+    container_name: blue-team-frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  postgres_data:

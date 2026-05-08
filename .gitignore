@@ -1,0 +1,77 @@
+# Local environment
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# Local planning / working notes
+task_plan.md
+findings.md
+progress.md
+.planning/
+
+# Python caches / virtualenvs / tooling
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.py,cover
+.python-version
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.nox/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Frontend caches / build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/dist-ssr/
+
+# Runtime outputs
+run_logs/
+backend/data/*.db
+backend/data/*.db-*
+backend/data/*.sqlite
+backend/data/*.sqlite3
+backend/data/demo_skills/*
+!backend/data/demo_skills/filesystem-reader/
+!backend/data/demo_skills/filesystem-reader/**
+!backend/data/demo_skills/plugin-risk-audit/
+!backend/data/demo_skills/plugin-risk-audit/**
+backend/data/reports/
+backend/data/system_actions/
+tools/agent_gateway/generated/*
+!tools/agent_gateway/generated/README.md
+tools/**/__pycache__/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

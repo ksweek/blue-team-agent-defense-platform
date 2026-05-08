@@ -1,0 +1,71 @@
+[
+  {
+    "source_repo": "promptfoo/promptfoo",
+    "source_path": "examples/redteam-rag/redteam.yaml",
+    "strategy_family": [
+      "jailbreak",
+      "jailbreak:composite",
+      "jailbreak:tree",
+      "crescendo",
+      "goat"
+    ],
+    "mapped_sections": [
+      "间接 Prompt Injection",
+      "多轮上下文污染",
+      "组合攻击链"
+    ],
+    "notes": "适合 RAG 场景的间接注入、多轮污染和组合攻击测试。"
+  },
+  {
+    "source_repo": "promptfoo/promptfoo",
+    "source_path": "examples/redteam-bestOfN-strategy/promptfooconfig.yaml",
+    "strategy_family": [
+      "best-of-n"
+    ],
+    "mapped_sections": [
+      "多轮上下文污染",
+      "组合攻击链"
+    ],
+    "notes": "适合批量变体撞库和自动化绕过测试。"
+  },
+  {
+    "source_repo": "promptfoo/promptfoo",
+    "source_path": "examples/redteam-indirect-web-pwn/promptfooconfig.yaml",
+    "strategy_family": [
+      "indirect-web-pwn",
+      "layer",
+      "jailbreak:meta",
+      "jailbreak:hydra"
+    ],
+    "mapped_sections": [
+      "间接 Prompt Injection",
+      "未授权工具调用",
+      "组合攻击链"
+    ],
+    "notes": "适合网页污染、间接注入和外部内容驱动攻击。"
+  },
+  {
+    "source_repo": "promptfoo/promptfoo",
+    "source_path": "examples/redteam-coding-agent/promptfooconfig.yaml",
+    "strategy_family": [
+      "coding-agent-redteam"
+    ],
+    "mapped_sections": [
+      "未授权工具调用",
+      "受保护路径、技能、插件测试"
+    ],
+    "notes": "适合工具调用、受保护路径和编码代理安全评测。"
+  },
+  {
+    "source_repo": "promptfoo/promptfoo",
+    "source_path": "examples/redteam-xstest/promptfooconfig.yaml",
+    "strategy_family": [
+      "xstest"
+    ],
+    "mapped_sections": [
+      "直接 Prompt Injection",
+      "输出泄露与脱敏测试"
+    ],
+    "notes": "适合输出边界、拒答一致性和脱敏测试。"
+  }
+]

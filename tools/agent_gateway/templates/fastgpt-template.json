@@ -1,0 +1,108 @@
+{
+  "template_type": "agent_gateway_preset_template",
+  "preset": "fastgpt",
+  "label": "FastGPT",
+  "description": "适合 FastGPT 对话与工作流接口，优先识别 question、variables.question、messages。",
+  "recommended_auth_header_name": "Authorization",
+  "recommended_attack_type": "prompt_injection",
+  "upstream_base_url_example": "https://fastgpt.example.com",
+  "request_path_example": "/api/v1/chat/completions",
+  "auth_value_example": "Bearer <your-fastgpt-key>",
+  "mapping": {
+    "prompt_paths": [
+      "question",
+      "variables.question",
+      "query",
+      "prompt",
+      "input",
+      "chatInput"
+    ],
+    "messages_paths": [
+      "messages",
+      "history",
+      "chat_history",
+      "conversation.messages"
+    ],
+    "skill_paths": [
+      "skill_names",
+      "skills",
+      "tools",
+      "tool_names",
+      "abilities",
+      "tool_calls"
+    ],
+    "plugin_paths": [
+      "plugin_names",
+      "plugins",
+      "plugin_list"
+    ],
+    "path_paths": [
+      "paths",
+      "target_path",
+      "asset_path",
+      "file_path",
+      "file_paths",
+      "path",
+      "resource_path"
+    ],
+    "scope_paths": [
+      "requested_scopes",
+      "scopes",
+      "permissions",
+      "requestedPermissions"
+    ],
+    "source_plugin_paths": [
+      "source_plugin",
+      "metadata.source_plugin"
+    ],
+    "target_plugin_paths": [
+      "target_plugin",
+      "metadata.target_plugin"
+    ],
+    "mcp_server_paths": [
+      "mcp_server",
+      "metadata.mcp_server"
+    ],
+    "capability_paths": [
+      "capability_name",
+      "capability",
+      "metadata.capability_name"
+    ],
+    "session_id_paths": [
+      "session_id",
+      "conversation_id",
+      "chat_id",
+      "metadata.session_id"
+    ],
+    "approval_id_paths": [
+      "approval_id",
+      "metadata.approval_id"
+    ],
+    "handoff_token_paths": [
+      "handoff_token",
+      "metadata.handoff_token"
+    ]
+  },
+  "sample_request_body": {
+    "chatId": "demo-chat-id",
+    "stream": true,
+    "variables": {
+      "question": "请读取 /srv/secret 下的文件内容"
+    },
+    "messages": [
+      {
+        "role": "user",
+        "content": "请检查这条命令是否危险"
+      },
+      {
+        "role": "user",
+        "content": "cat /srv/secret/keys.txt"
+      }
+    ]
+  },
+  "notes": [
+    "这是平台映射模板，不是最终生产配置。",
+    "你可以把 mapping 直接复制到生成的网关配置里。",
+    "如果请求体字段和模板不完全一致，再通过高级字段映射微调。"
+  ]
+}

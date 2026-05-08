@@ -1,0 +1,36 @@
+name: 功能建议
+description: 提交一个明确的产品或工程增强建议
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 先说明当前卡点，不要只写想要什么
+      placeholder: 例如：网关缺少对某类运行时回调的统一接入，导致无法保护现有 Agent
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      placeholder: 说明你期望的交互、接口、部署方式或数据结构
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 影响范围
+      placeholder: 涉及后端、前端、网关、Worker、报告、样本集还是文档
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      placeholder: 完成后应该如何判断该功能已经可用
+  - type: textarea
+    id: risks
+    attributes:
+      label: 风险或取舍
+      placeholder: 是否影响已有接口、是否需要迁移、是否影响默认启动流程

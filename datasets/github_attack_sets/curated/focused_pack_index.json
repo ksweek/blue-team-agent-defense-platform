@@ -1,0 +1,82 @@
+{
+  "packs": [
+    {
+      "pack_name": "MCP / plugin-chain / cross-plugin",
+      "pack_file": "curated/focused_packs/04_mcp_plugin_chain_cross_plugin.jsonl",
+      "mapped_section": "受保护路径、技能、插件测试",
+      "entry_count": 25,
+      "families": {
+        "cross-plugin": 2,
+        "cross-plugin_auth-hop": 1,
+        "cross-plugin_data-staging": 1,
+        "cross-plugin_role-borrowing": 1,
+        "cross-plugin_summary-laundering": 1,
+        "function-calling": 2,
+        "function-calling_alias-bypass": 1,
+        "function-calling_schema-smuggling": 1,
+        "mcp-injection": 2,
+        "mcp-injection_authority-smuggling": 1,
+        "mcp-injection_server-message-smuggling": 1,
+        "mcp-protocol": 1,
+        "mcp-protocol_capability-spoof": 1,
+        "mcp-protocol_session-rebind": 1,
+        "mcp-tool-chain": 2,
+        "mcp-tool-chain_cross-server-hop": 1,
+        "mcp-tool-chain_secret-staging": 1,
+        "mcp-tool-chain_shadow-approval": 1,
+        "plugin-abuse": 1,
+        "plugin-abuse_disabled-plugin-bypass": 1,
+        "plugin-abuse_skill-proxy": 1
+      },
+      "test_mode": "mixed",
+      "input_format": "raw_catalog_entry",
+      "runner_hint": "Use as the canonical focused source pack, then choose the split pack that matches your runner.",
+      "description": "Focused pack for MCP server responses, protocol spoofing, plugin chaining, cross-plugin authorization hops, and function-calling abuse."
+    },
+    {
+      "pack_name": "MCP / plugin-chain / cross-plugin single-turn",
+      "pack_file": "curated/focused_packs/04_mcp_plugin_chain_cross_plugin_single_turn.jsonl",
+      "mapped_section": "受保护路径、技能、插件测试",
+      "entry_count": 11,
+      "families": {
+        "cross-plugin_data-staging": 1,
+        "function-calling": 2,
+        "function-calling_alias-bypass": 1,
+        "function-calling_schema-smuggling": 1,
+        "mcp-protocol": 1,
+        "mcp-tool-chain": 2,
+        "mcp-tool-chain_secret-staging": 1,
+        "plugin-abuse": 1,
+        "plugin-abuse_skill-proxy": 1
+      },
+      "test_mode": "single_turn",
+      "input_format": "single_prompt",
+      "runner_hint": "Best for stateless HTTP chat completion calls or runners that reset session state per row.",
+      "description": "Single-turn prompts for immediate capability abuse, direct function-calling spoofing, one-shot MCP chain requests, and plugin misuse."
+    },
+    {
+      "pack_name": "MCP / plugin-chain / cross-plugin multi-turn",
+      "pack_file": "curated/focused_packs/04_mcp_plugin_chain_cross_plugin_multi_turn.jsonl",
+      "mapped_section": "受保护路径、技能、插件测试",
+      "entry_count": 14,
+      "families": {
+        "cross-plugin": 2,
+        "cross-plugin_auth-hop": 1,
+        "cross-plugin_role-borrowing": 1,
+        "cross-plugin_summary-laundering": 1,
+        "mcp-injection": 2,
+        "mcp-injection_authority-smuggling": 1,
+        "mcp-injection_server-message-smuggling": 1,
+        "mcp-protocol_capability-spoof": 1,
+        "mcp-protocol_session-rebind": 1,
+        "mcp-tool-chain_cross-server-hop": 1,
+        "mcp-tool-chain_shadow-approval": 1,
+        "plugin-abuse_disabled-plugin-bypass": 1
+      },
+      "test_mode": "multi_turn",
+      "input_format": "conversation_turns",
+      "runner_hint": "Best for stateful agent sessions that preserve tool state, plugin context, and prior approvals across turns.",
+      "description": "Stateful conversation cases for cross-plugin role drift, auth hopping, MCP message smuggling, session rebinding, and chain approval carryover."
+    }
+  ]
+}
