@@ -1,10 +1,17 @@
-## Generated Gateway Profiles
+﻿# Generated Runtime Configs
 
-This directory stores locally generated runtime gateway profiles and helper launch scripts.
+这个目录用于保存客户端首次接入后生成的本地运行配置，例如：
 
-Typical generated contents include:
-- runtime profile JSON files
-- `run-*.cmd` and `run-*.sh` wrappers
-- approved runtime credentials
+- Runtime 长期凭据
+- 本地桥接配置
+- 已绑定的上游接入参数
 
-These files are machine-specific and may contain secrets. Keep this directory untracked.
+公开仓库不包含任何真实生成物。
+
+如果你是首次接入：
+
+1. 运行接入脚本完成激活或注册。
+2. 工具会在此目录下写入本地配置。
+3. 后续再次启动时会优先复用这些配置。
+
+请不要把真实生成的 `*.json` 配置文件提交到版本库。

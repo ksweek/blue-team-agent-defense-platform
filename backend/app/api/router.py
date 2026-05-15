@@ -64,6 +64,11 @@ api_router.include_router(
     dependencies=[Depends(require_roles("admin", "analyst"))],
 )
 api_router.include_router(
+    runtime_registry.public_router,
+    prefix="/runtime-registry",
+    tags=["runtime-registry"],
+)
+api_router.include_router(
     runtime_registry.router,
     prefix="/runtime-registry",
     tags=["runtime-registry"],

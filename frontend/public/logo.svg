@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="logoTitle logoDesc">
+  <title id="logoTitle">Blue Team Defense Platform</title>
+  <desc id="logoDesc">A shield and lock emblem surrounded by a connected network ring.</desc>
+  <defs>
+    <linearGradient id="ringBlue" x1="88" y1="102" x2="256" y2="410" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#152a67" />
+      <stop offset="0.45" stop-color="#224da4" />
+      <stop offset="1" stop-color="#24d9cf" />
+    </linearGradient>
+    <linearGradient id="ringTeal" x1="256" y1="102" x2="424" y2="410" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#24d9cf" />
+      <stop offset="0.55" stop-color="#20b8db" />
+      <stop offset="1" stop-color="#163b86" />
+    </linearGradient>
+    <linearGradient id="shieldOuter" x1="160" y1="124" x2="352" y2="412" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d7e4f6" />
+      <stop offset="0.5" stop-color="#9caece" />
+      <stop offset="1" stop-color="#6f86a9" />
+    </linearGradient>
+    <linearGradient id="shieldInner" x1="170" y1="146" x2="342" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#183a75" />
+      <stop offset="0.58" stop-color="#0f2754" />
+      <stop offset="1" stop-color="#09162f" />
+    </linearGradient>
+    <linearGradient id="lockBody" x1="198" y1="236" x2="314" y2="370" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6fbff" />
+      <stop offset="0.42" stop-color="#d8e3f2" />
+      <stop offset="1" stop-color="#9caec7" />
+    </linearGradient>
+    <linearGradient id="lockShackle" x1="220" y1="180" x2="292" y2="266" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8fcff" />
+      <stop offset="1" stop-color="#9ab0ca" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1" />
+      <stop offset="0.4" stop-color="#3cefff" stop-opacity="0.95" />
+      <stop offset="1" stop-color="#3cefff" stop-opacity="0" />
+    </radialGradient>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#08111f" flood-opacity="0.28" />
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#ffffff" flood-opacity="0.18" />
+    </filter>
+    <filter id="nodeGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#31e6ff" flood-opacity="0.95" />
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#31e6ff" flood-opacity="0.45" />
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" fill="transparent" />
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="256" cy="256" r="184" stroke="url(#ringBlue)" stroke-width="18" opacity="0.96" />
+
+    <g opacity="0.92" filter="url(#nodeGlow)">
+      <circle cx="108" cy="256" r="18" fill="#2e84ff" />
+      <circle cx="404" cy="256" r="18" fill="#27e6d0" />
+      <circle cx="256" cy="84" r="18" fill="#1da8d6" />
+      <circle cx="256" cy="428" r="22" fill="#27e6d0" />
+      <circle cx="163" cy="184" r="10" fill="#244c9d" opacity="0.9" />
+      <circle cx="349" cy="184" r="10" fill="#24b7df" opacity="0.9" />
+      <circle cx="161" cy="338" r="10" fill="#244c9d" opacity="0.9" />
+      <circle cx="351" cy="338" r="10" fill="#24b7df" opacity="0.9" />
+    </g>
+
+    <g stroke="#2f5fb9" stroke-width="4" opacity="0.72">
+      <path d="M 126 250 L 160 230 L 163 184" />
+      <path d="M 126 262 L 160 286 L 161 338" />
+      <path d="M 386 250 L 352 230 L 349 184" />
+      <path d="M 386 262 L 352 286 L 351 338" />
+      <path d="M 256 102 L 256 122" />
+      <path d="M 256 390 L 256 406" />
+    </g>
+
+    <g stroke="url(#ringBlue)" stroke-width="5" opacity="0.85">
+      <path d="M 160 230 L 210 206 L 256 204" />
+      <path d="M 160 286 L 210 310 L 256 318" />
+    </g>
+    <g stroke="url(#ringTeal)" stroke-width="5" opacity="0.85">
+      <path d="M 352 230 L 302 206 L 256 204" />
+      <path d="M 352 286 L 302 310 L 256 318" />
+    </g>
+
+    <circle cx="256" cy="256" r="112" fill="url(#glow)" opacity="0.45" stroke="none" />
+
+    <path
+      d="M256 132
+         L372 178
+         L362 302
+         C355 353 320 392 256 424
+         C192 392 157 353 150 302
+         L140 178
+         Z"
+      fill="url(#shieldOuter)"
+      filter="url(#softShadow)"
+      stroke="rgba(255,255,255,0.55)"
+      stroke-width="1.5"
+    />
+    <path
+      d="M256 152
+         L346 190
+         L339 296
+         C333 336 305 369 256 395
+         C207 369 179 336 173 296
+         L166 190
+         Z"
+      fill="url(#shieldInner)"
+      stroke="rgba(255,255,255,0.10)"
+      stroke-width="1"
+    />
+    <path d="M202 188 C224 170 288 170 310 188" stroke="rgba(255,255,255,0.26)" stroke-width="4" />
+    <path d="M206 204 C230 194 282 194 306 204" stroke="rgba(30, 79, 163, 0.35)" stroke-width="3" />
+
+    <circle cx="256" cy="296" r="48" fill="rgba(6, 17, 41, 0.22)" />
+    <rect x="186" y="238" width="140" height="116" rx="28" fill="url(#lockBody)" filter="url(#softShadow)" />
+    <rect x="200" y="252" width="112" height="88" rx="22" fill="#c9d7ea" opacity="0.46" />
+
+    <path
+      d="M212 238
+         v-20
+         c0-25 19-44 44-44
+         s44 19 44 44
+         v20"
+      fill="none"
+      stroke="url(#lockShackle)"
+      stroke-width="18"
+      stroke-linecap="round"
+    />
+    <path
+      d="M224 238
+         v-18
+         c0-17 13-30 32-30
+         s32 13 32 30
+         v18"
+      fill="none"
+      stroke="#eff5fb"
+      stroke-width="8"
+      stroke-linecap="round"
+      opacity="0.85"
+    />
+
+    <circle cx="256" cy="296" r="17" fill="#112444" />
+    <rect x="249" y="296" width="14" height="36" rx="7" fill="#112444" />
+
+    <g filter="url(#nodeGlow)">
+      <circle cx="256" cy="428" r="18" fill="#24d9cf" />
+      <circle cx="248" cy="426" r="4" fill="#ffffff" />
+      <circle cx="264" cy="426" r="4" fill="#ffffff" />
+    </g>
+    <path d="M256 406 L256 412" stroke="#2fb8db" stroke-width="6" stroke-linecap="round" />
+  </g>
+</svg>

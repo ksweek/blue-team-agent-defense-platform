@@ -14,10 +14,11 @@ class AiEndpointCreate(BaseModel):
     endpoint_key: str
     display_name: str
     endpoint_group: str = "default"
+    target_type: Optional[str] = None
     provider_type: str = "openai_compatible"
-    base_url: str
+    base_url: str = ""
     api_key: str = ""
-    model_name: str
+    model_name: str = ""
     enabled: bool = True
     is_default: bool = False
     protection_enabled: bool = True
@@ -33,6 +34,7 @@ class AiEndpointUpdate(BaseModel):
     endpoint_key: Optional[str] = None
     display_name: Optional[str] = None
     endpoint_group: Optional[str] = None
+    target_type: Optional[str] = None
     provider_type: Optional[str] = None
     base_url: Optional[str] = None
     api_key: Optional[str] = None

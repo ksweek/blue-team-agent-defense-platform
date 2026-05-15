@@ -36,7 +36,7 @@ def _serialize_user(item: User) -> dict:
 
 
 def _get_user_or_404(db: Session, user_id: int) -> User:
-    item = db.query(User).get(user_id)
+    item = db.get(User, user_id)
     if item is None:
         raise HTTPException(status_code=404, detail="user not found")
     return item

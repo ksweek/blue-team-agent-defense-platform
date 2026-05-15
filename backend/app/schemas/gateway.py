@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -105,3 +105,12 @@ class GatewayRuntimeHeartbeatRequest(RuntimeTaskHeartbeat):
 
 class GatewayRuntimeCompleteRequest(RuntimeTaskComplete):
     task_id: int
+
+
+class GatewayRuntimeCommandCompleteRequest(BaseModel):
+    status: str = "completed"
+    summary: str = ""
+    response_text: Optional[str] = None
+    response_json: Optional[Union[dict[str, Any], list[Any]]] = None
+    error: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)

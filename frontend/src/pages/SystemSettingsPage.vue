@@ -48,12 +48,13 @@ const EMAIL_SETTING_KEYS = [
   'notify_email_min_level',
   'notify_email_digest_minutes',
   'notify_email_subject_prefix',
-  'notify_email_sender',
-  'smtp_host',
-  'smtp_port',
-  'smtp_username',
-  'smtp_password',
-  'smtp_starttls',
+  'qq_email_account',
+  'qq_email_auth_code',
+] as const
+const REVIEW_AI_SETTING_KEYS = [
+  'review_ai_api_url',
+  'review_ai_api_key',
+  'review_ai_model',
 ] as const
 
 const { data, loading, error, refresh } = useAsyncData(async () => {
@@ -78,6 +79,7 @@ const settingsKeyword = ref('')
 const settingDrafts = reactive<Record<string, string>>({})
 const tokenDrafts = reactive<Record<string, string>>({})
 const emailSettingsExpanded = ref(true)
+const reviewAiSettingsExpanded = ref(true)
 
 const settings = computed<SystemSettingItem[]>(() => data.value?.settings.items ?? [])
 const auditLogs = computed<AuditLogItem[]>(() => data.value?.auditLogs.items ?? [])
@@ -94,11 +96,17 @@ const emailToggleSetting = computed(
 const emailSettings = computed(() =>
   settings.value.filter((item) => EMAIL_SETTING_KEYS.includes(item.setting_key as (typeof EMAIL_SETTING_KEYS)[number]))
 )
+const reviewAiSettings = computed(() =>
+  settings.value.filter((item) => REVIEW_AI_SETTING_KEYS.includes(item.setting_key as (typeof REVIEW_AI_SETTING_KEYS)[number]))
+)
 const standardSettings = computed(() =>
   settings.value.filter(
     (item) =>
       item.setting_key === EMAIL_TOGGLE_KEY ||
-      !EMAIL_SETTING_KEYS.includes(item.setting_key as (typeof EMAIL_SETTING_KEYS)[number])
+      (
+        !EMAIL_SETTING_KEYS.includes(item.setting_key as (typeof EMAIL_SETTING_KEYS)[number]) &&
+        !REVIEW_AI_SETTING_KEYS.includes(item.setting_key as (typeof REVIEW_AI_SETTING_KEYS)[number])
+      )
   )
 )
 
@@ -126,6 +134,18 @@ const filteredEmailSettings = computed(() => {
   })
 })
 
+const filteredReviewAiSettings = computed(() => {
+  const keyword = settingsKeywordValue.value
+  if (!keyword) {
+    return reviewAiSettings.value
+  }
+
+  return reviewAiSettings.value.filter((item) => {
+    const label = settingLabel(item).toLowerCase()
+    return label.includes(keyword) || item.setting_key.toLowerCase().includes(keyword)
+  })
+})
+
 const emailEnabled = computed(() => {
   const draftValue = settingDrafts[EMAIL_TOGGLE_KEY]
   if (draftValue) {
@@ -136,6 +156,9 @@ const emailEnabled = computed(() => {
 
 const showEmailSettingsPanel = computed(
   () => emailEnabled.value && (!settingsKeywordValue.value || filteredEmailSettings.value.length > 0)
+)
+const showReviewAiSettingsPanel = computed(
+  () => !settingsKeywordValue.value || filteredReviewAiSettings.value.length > 0
 )
 
 const visibleStandardSettings = computed(() => {
@@ -151,7 +174,10 @@ const visibleStandardSettings = computed(() => {
 })
 
 const visibleSettingCount = computed(
-  () => visibleStandardSettings.value.length + (showEmailSettingsPanel.value ? 1 : 0)
+  () =>
+    visibleStandardSettings.value.length +
+    (showReviewAiSettingsPanel.value ? 1 : 0) +
+    (showEmailSettingsPanel.value ? 1 : 0)
 )
 
 const syncTone = computed<Tone>(() => {
@@ -443,6 +469,17 @@ const emailSummaryText = computed(() => {
   ].join(' / ')
 })
 
+const reviewAiSummaryText = computed(() => {
+  const apiUrl = settingCurrentValue('review_ai_api_url')
+  const apiKey = settingCurrentValue('review_ai_api_key')
+  const model = settingCurrentValue('review_ai_model') || 'gpt-4.1-mini'
+  return [
+    apiUrl ? '接口已配置' : '未配置接口',
+    apiKey ? '密钥已配置' : '未配置密钥',
+    `模型 ${model}`,
+  ].join(' / ')
+})
+
 function selectAuditLog(logId: number) {
   selectedLogId.value = logId
 }
@@ -704,6 +741,81 @@ async function runAction(actionKey: SystemActionKey) {
                   @blur="saveSetting(item.setting_key)"
                   @keydown.enter.prevent="saveSetting(item.setting_key)"
                 />
+              </div>
+            </article>
+
+            <article
+              v-if="showReviewAiSettingsPanel"
+              class="settings-dropdown-card"
+            >
+              <button
+                class="settings-dropdown-toggle"
+                type="button"
+                @click="reviewAiSettingsExpanded = !reviewAiSettingsExpanded"
+              >
+                <div class="settings-dropdown-copy">
+                  <div class="card-head">
+                    <div>
+                      <h4>辅助研判配置</h4>
+                      <p class="settings-form-helper">{{ reviewAiSummaryText }}</p>
+                    </div>
+                    <StatusPill
+                      :label="reviewAiSettingsExpanded ? '已展开' : '已收起'"
+                      :tone="settingCurrentValue('review_ai_api_url') && settingCurrentValue('review_ai_api_key') ? 'safe' : 'warn'"
+                    />
+                  </div>
+                </div>
+                <span class="settings-dropdown-indicator">{{ reviewAiSettingsExpanded ? '收起' : '展开' }}</span>
+              </button>
+
+              <div v-if="reviewAiSettingsExpanded" class="settings-dropdown-body">
+                <article
+                  v-for="item in filteredReviewAiSettings"
+                  :key="item.setting_key"
+                  class="settings-form-row settings-form-row-compact settings-form-row-nested"
+                >
+                  <div class="settings-form-copy">
+                    <div class="card-head">
+                      <div>
+                        <h4>{{ settingLabel(item) }}</h4>
+                        <p v-if="fieldHelper(item)" class="settings-form-helper">{{ fieldHelper(item) }}</p>
+                      </div>
+                      <StatusPill
+                        :label="settingStatusLabel(item.setting_key)"
+                        :tone="settingStatusTone(item.setting_key)"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="settings-form-control">
+                    <select
+                      v-if="fieldMeta(item).control === 'select'"
+                      v-model="settingDrafts[item.setting_key]"
+                      class="select-input settings-form-select"
+                      :disabled="!canEdit(item.setting_key)"
+                      @change="saveSetting(item.setting_key)"
+                    >
+                      <option
+                        v-for="option in fieldOptions(item)"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+
+                    <input
+                      v-else
+                      v-model="settingDrafts[item.setting_key]"
+                      class="text-input settings-form-input"
+                      :disabled="!canEdit(item.setting_key)"
+                      :placeholder="fieldMeta(item).placeholder"
+                      :type="isPasswordInput(item) ? 'password' : 'text'"
+                      @blur="saveSetting(item.setting_key)"
+                      @keydown.enter.prevent="saveSetting(item.setting_key)"
+                    />
+                  </div>
+                </article>
               </div>
             </article>
 

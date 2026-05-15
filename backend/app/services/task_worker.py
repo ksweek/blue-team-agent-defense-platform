@@ -12,8 +12,10 @@ from sqlalchemy import func
 from ..core.config import settings
 from ..db.session import SessionLocal
 from ..models import AttackTask, TaskRuntimeLog, User
+from .ai_endpoints import task_ai_endpoint_snapshot
 from .audit import append_audit_log
 from .event_status import EVENT_STATUS_INTERCEPTED, EVENT_STATUS_SUSPICIOUS
+from .model_provider import ProviderConfigurationError, ProviderExecutionError
 from .policy_enforcer import append_task_authorization_snapshot, authorize_task_preflight, serialize_authorization_decision
 from .task_runner import TaskExecutionInterrupted, execute_attack_task_pipeline, record_task_outcome
 from .time_utils import format_beijing, utc_now
@@ -31,6 +33,17 @@ _RUNNING_TASK_INTERRUPT_TARGET = {
     "pause_requested": "paused_ready",
     "cancel_requested": "cancelled",
 }
+
+
+def _preflight_deny_blocks_task(task: AttackTask) -> bool:
+    ai_endpoint = task_ai_endpoint_snapshot(task) or {}
+    if not ai_endpoint:
+        return True
+    protection_enabled = bool(ai_endpoint.get("protection_enabled", True))
+    protection_mode = str(ai_endpoint.get("protection_mode") or "").strip().lower()
+    if not protection_enabled or protection_mode in {"observe", "off"}:
+        return False
+    return True
 
 
 def append_task_runtime_log(
@@ -103,7 +116,7 @@ def task_runtime_log_snapshot(task_id: int, *, after: int = 0, limit: int = 100)
             .all()
         )
         current_max = db.query(func.max(TaskRuntimeLog.log_offset)).filter(TaskRuntimeLog.task_id == task_id).scalar() or 0
-        task = db.query(AttackTask).get(task_id)
+        task = db.get(AttackTask, task_id)
     finally:
         db.close()
 
@@ -202,7 +215,7 @@ def enqueue_attack_task(task_id: int) -> bool:
     start_task_worker()
     db = SessionLocal()
     try:
-        task = db.query(AttackTask).get(task_id)
+        task = db.get(AttackTask, task_id)
         if task is None:
             logger.warning("task enqueue skipped | task_id=%s reason=task_not_found", task_id)
             return False
@@ -440,7 +453,7 @@ def _claim_next_task(worker_name: str) -> int | None:
 def _run_task(task_id: int, *, worker_name: str) -> None:
     db = SessionLocal()
     try:
-        task = db.query(AttackTask).get(task_id)
+        task = db.get(AttackTask, task_id)
         if task is None:
             logger.warning("task execution skipped | task_id=%s reason=task_not_found", task_id)
             return
@@ -489,7 +502,7 @@ def _run_task(task_id: int, *, worker_name: str) -> None:
             metadata={"summary": preflight.summary, "worker": worker_name},
         )
 
-        if preflight.decision == "deny":
+        if preflight.decision == "deny" and _preflight_deny_blocks_task(task):
             now = format_beijing(utc_now()) or ""
             serialized_preflight = serialize_authorization_decision(preflight)
             raw_response = json.dumps({"preflight_authorization": serialized_preflight}, ensure_ascii=False)
@@ -543,6 +556,14 @@ def _run_task(task_id: int, *, worker_name: str) -> None:
                 },
             )
             return
+        if preflight.decision == "deny":
+            append_task_runtime_log(
+                task.id,
+                level="warn",
+                stage="preflight",
+                message="Preflight returned deny, but endpoint protection is observe/off, so the task continues for attack testing.",
+                metadata={"summary": preflight.summary, "worker": worker_name},
+            )
 
         signal = _running_task_control_signal(task.id)
         if signal is not None:
@@ -598,7 +619,7 @@ def _run_task(task_id: int, *, worker_name: str) -> None:
         )
     except TaskExecutionInterrupted as exc:
         db.rollback()
-        interrupted_task = db.query(AttackTask).get(task_id)
+        interrupted_task = db.get(AttackTask, task_id)
         if interrupted_task is not None:
             _mark_interrupted_task(db, interrupted_task, exc.signal)
             user = _audit_user_for_task(db, interrupted_task)
@@ -627,9 +648,13 @@ def _run_task(task_id: int, *, worker_name: str) -> None:
             logger.warning("task execution interrupted | task_id=%s signal=%s task_name=-", task_id, exc.signal)
     except Exception as exc:
         db.rollback()
-        failed_task = db.query(AttackTask).get(task_id)
+        failed_task = db.get(AttackTask, task_id)
         if failed_task is not None:
-            retry_state = _schedule_retry_or_dead_letter(db, failed_task, str(exc))
+            retry_state = (
+                _schedule_retry_or_dead_letter(db, failed_task, str(exc))
+                if _is_retryable_worker_failure(exc)
+                else _mark_task_failed_without_retry(db, failed_task, exc)
+            )
             user = _audit_user_for_task(db, failed_task)
             if user is not None:
                 append_audit_log(
@@ -640,12 +665,20 @@ def _run_task(task_id: int, *, worker_name: str) -> None:
                     f"worker failed task {failed_task.task_name}: {exc}",
                 )
             db.commit()
-            logger.exception(
-                "task execution failed | task_id=%s task_name=%s retry_state=%s",
-                failed_task.id,
-                failed_task.task_name,
-                retry_state,
-            )
+            if retry_state == "failed":
+                logger.warning(
+                    "task execution failed without retry | task_id=%s task_name=%s error=%s",
+                    failed_task.id,
+                    failed_task.task_name,
+                    exc,
+                )
+            else:
+                logger.exception(
+                    "task execution failed | task_id=%s task_name=%s retry_state=%s",
+                    failed_task.id,
+                    failed_task.task_name,
+                    retry_state,
+                )
             if retry_state == "retry_scheduled":
                 append_task_runtime_log(
                     failed_task.id,
@@ -654,12 +687,20 @@ def _run_task(task_id: int, *, worker_name: str) -> None:
                     message=f"Task execution failed and was scheduled for retry: {exc}",
                     metadata={"worker": worker_name},
                 )
-            else:
+            elif retry_state == "dead_letter":
                 append_task_runtime_log(
                     failed_task.id,
                     level="error",
                     stage="pipeline",
                     message=f"Task execution failed and moved to dead letter: {exc}",
+                    metadata={"worker": worker_name},
+                )
+            else:
+                append_task_runtime_log(
+                    failed_task.id,
+                    level="error",
+                    stage="pipeline",
+                    message=f"Task execution failed without retry: {exc}",
                     metadata={"worker": worker_name},
                 )
         else:
@@ -693,7 +734,7 @@ def _build_control_check(task_id: int):
 def _touch_task_heartbeat(task_id: int) -> None:
     db = SessionLocal()
     try:
-        task = db.query(AttackTask).get(task_id)
+        task = db.get(AttackTask, task_id)
         if task is None or task.status not in {"running", "pause_requested", "cancel_requested"}:
             return
         task.last_heartbeat_at = utc_now()
@@ -708,7 +749,7 @@ def _touch_task_heartbeat(task_id: int) -> None:
 def _running_task_control_signal(task_id: int) -> str | None:
     db = SessionLocal()
     try:
-        task = db.query(AttackTask).get(task_id)
+        task = db.get(AttackTask, task_id)
         if task is None:
             return None
         if task.status in _RUNNING_TASK_INTERRUPT_STATUS:
@@ -736,6 +777,85 @@ def _mark_interrupted_task(db, task: AttackTask, signal: str) -> None:
     task.latest_event_id = None
     task.latest_report_id = None
     db.flush()
+
+
+def _is_retryable_worker_failure(exc: Exception) -> bool:
+    if isinstance(exc, ProviderConfigurationError):
+        return False
+    if isinstance(exc, ProviderExecutionError):
+        return bool(exc.retryable)
+    return True
+
+
+def _failure_payload_from_exception(exc: Exception, *, attempt: int | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": "failed",
+        "reason": str(exc),
+        "retryable": _is_retryable_worker_failure(exc),
+    }
+    if attempt is not None:
+        payload["attempt"] = attempt
+    if isinstance(exc, ProviderConfigurationError):
+        payload["failure_type"] = "provider_configuration"
+    if isinstance(exc, ProviderExecutionError):
+        payload["failure_type"] = exc.failure_type
+        if exc.status_code is not None:
+            payload["status_code"] = exc.status_code
+    return payload
+
+
+def _worker_failure_hit_rules(exc: Exception) -> list[str]:
+    hit_rules = ["worker-failed"]
+    if isinstance(exc, ProviderConfigurationError):
+        hit_rules.append("provider-configuration")
+    elif isinstance(exc, ProviderExecutionError):
+        hit_rules.append("provider-retryable" if exc.retryable else "provider-non-retryable")
+        if exc.failure_type:
+            hit_rules.append(exc.failure_type)
+    return hit_rules
+
+
+def _mark_task_failed_without_retry(db, task: AttackTask, exc: Exception) -> str:
+    params = dict(task.params)
+    retry_state = dict(params.get("worker_retry") or {})
+    attempts = int(retry_state.get("attempts") or 0) + 1
+    retry_state.update(
+        {
+            "attempts": attempts,
+            "max_attempts": max(1, int(retry_state.get("max_attempts") or settings.task_worker_max_attempts)),
+            "last_error": str(exc),
+            "last_failed_at": format_beijing(utc_now()) or "",
+            "retryable": False,
+            "terminal_state": "failed",
+        }
+    )
+    params["worker_retry"] = retry_state
+    task.set_params(params)
+
+    now = format_beijing(utc_now()) or ""
+    record_task_outcome(
+        db,
+        task,
+        summary=f"Task execution failed without retry: {exc}",
+        raw_response=json.dumps(_failure_payload_from_exception(exc, attempt=attempts), ensure_ascii=False),
+        task_status="failed",
+        event_type="worker_failed",
+        event_level="medium",
+        event_status=EVENT_STATUS_SUSPICIOUS,
+        event_source="task-worker/non-retryable",
+        event_detail=str(exc),
+        hit_rules=_worker_failure_hit_rules(exc),
+        raw_input=json.dumps(task.params, ensure_ascii=False),
+        result=str(exc),
+        operation_logs=[
+            {"operator": "worker", "action": "task_failed", "time": now},
+            {"operator": "worker", "action": "non_retryable_failure", "time": now},
+        ],
+        report_type="worker_failed",
+        created_by=task.created_by or 1,
+        create_report=True,
+    )
+    return "failed"
 
 
 def _schedule_retry_or_dead_letter(db, task: AttackTask, reason: str) -> str:
@@ -823,7 +943,7 @@ def _clear_task_retry_state(task: AttackTask) -> None:
 
 def _audit_user_for_task(db, task: AttackTask) -> User | None:
     if task.created_by:
-        user = db.query(User).get(task.created_by)
+        user = db.get(User, task.created_by)
         if user is not None:
             return user
     return db.query(User).order_by(User.id.asc()).first()

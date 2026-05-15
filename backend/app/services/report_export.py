@@ -102,11 +102,11 @@ QUERY_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 JSON_SECRET_VALUE_RE = re.compile(
-    r"(\"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|password|secret|handoff_token|x-api-key)\"?\s*:\s*\")([^\"]+)(\")",
+    r"(\"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|qq_email_auth_code|password|secret|handoff_token|x-api-key)\"?\s*:\s*\")([^\"]+)(\")",
     re.IGNORECASE,
 )
 TEXT_SECRET_VALUE_RE = re.compile(
-    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|password|secret|handoff_token|x-api-key)\b\s*[:=]\s*)([^\s\"',}]+)",
+    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|qq_email_auth_code|password|secret|handoff_token|x-api-key)\b\s*[:=]\s*)([^\s\"',}]+)",
     re.IGNORECASE,
 )
 COOKIE_RE = re.compile(r"(\b(?:cookie|set-cookie)\b\s*[:=]\s*)([^\r\n]+)", re.IGNORECASE)
@@ -145,7 +145,7 @@ def export_report_artifact(
     event: SecurityEvent | None = None,
     artifact_format: str = DEFAULT_REPORT_EXPORT_FORMAT,
 ) -> Path:
-    task = task or db.query(AttackTask).get(report.task_id)
+    task = task or db.get(AttackTask, report.task_id)
     if task is None:
         raise ValueError(f"task {report.task_id} not found for report export")
 
@@ -829,7 +829,7 @@ def _build_report_filename(report: Report, task: AttackTask, artifact_format: st
 
 def _resolve_event_for_task(db: Session, task: AttackTask, report: Report) -> SecurityEvent | None:
     if task.latest_event_id:
-        item = db.query(SecurityEvent).get(task.latest_event_id)
+        item = db.get(SecurityEvent, task.latest_event_id)
         if item is not None:
             return item
 
@@ -1205,6 +1205,7 @@ def _report_type_label(value: str | None) -> str:
         "task_execution": "任务执行报告",
         "runtime_execution": "运行时执行报告",
         "preflight_block": "预检阻断报告",
+        "worker_failed": "执行失败报告",
         "worker_dead_letter": "死信归档报告",
         "security_evaluation": "安全评估报告",
     }

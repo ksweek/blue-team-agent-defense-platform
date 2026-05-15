@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ...core.response import success
 from ...db.session import get_db
-from ...models import AttackTask, Skill, User
+from ...models import AiEndpoint, AttackTask, Skill, User
 from ...schemas.skill import (
     SkillCreateRequest,
     SkillImportDirectoryRequest,
@@ -18,8 +18,9 @@ from ...schemas.skill import (
 )
 from ...services.audit import append_audit_log
 from ...services.authorization import require_roles
+from ...services.endpoint_governance import assign_skills_to_endpoint, get_endpoint_skill_ids
 from ...services.repository import contains_keyword, paginate
-from ...services.skill_scan import describe_skill_source
+from ...services.skill_scan import describe_skill_source, serialize_skill_scan_source
 from ...services.skill_registry import (
     create_or_update_skill,
     import_skills_from_directory,
@@ -513,10 +514,26 @@ def _serialize_task(item: AttackTask) -> dict:
 
 
 def _get_skill_or_404(db: Session, skill_id: int) -> Skill:
-    item = db.query(Skill).get(skill_id)
+    item = db.get(Skill, skill_id)
     if item is None:
         raise HTTPException(status_code=404, detail="skill not found")
     return item
+
+
+def _get_ai_endpoint_or_404(db: Session, ai_endpoint_id: int) -> AiEndpoint:
+    item = db.get(AiEndpoint, ai_endpoint_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="ai endpoint not found")
+    return item
+
+
+def _task_ai_endpoint_id(item: AttackTask) -> int | None:
+    raw_value = item.params.get("ai_endpoint_id")
+    if isinstance(raw_value, int):
+        return raw_value
+    if isinstance(raw_value, str) and raw_value.strip().isdigit():
+        return int(raw_value.strip())
+    return None
 
 
 def _normalize_trust_status(value: str) -> str:
@@ -535,12 +552,16 @@ def list_skills(
     trust_status: Optional[str] = None,
     provider: Optional[str] = None,
     keyword: Optional[str] = None,
+    ai_endpoint_id: Optional[int] = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
+    endpoint = _get_ai_endpoint_or_404(db, ai_endpoint_id) if ai_endpoint_id is not None else None
+    scoped_skill_ids = set(get_endpoint_skill_ids(endpoint)) if endpoint is not None else set()
     items = [
         _serialize_skill(item)
         for item in db.query(Skill).order_by(Skill.created_at.desc(), Skill.id.desc()).all()
+        if endpoint is None or item.id in scoped_skill_ids
     ]
     scan_tasks = (
         db.query(AttackTask)
@@ -548,6 +569,8 @@ def list_skills(
         .order_by(AttackTask.created_at.desc(), AttackTask.id.desc())
         .all()
     )
+    if endpoint is not None:
+        scan_tasks = [item for item in scan_tasks if _task_ai_endpoint_id(item) == endpoint.id]
 
     if trust_status:
         items = [item for item in items if item["trust_status"] == trust_status]
@@ -602,6 +625,7 @@ def create_skill(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("admin")),
 ):
+    endpoint = _get_ai_endpoint_or_404(db, payload.ai_endpoint_id) if payload.ai_endpoint_id is not None else None
     skill, created = create_or_update_skill(
         db,
         skill_name=payload.skill_name.strip(),
@@ -610,12 +634,14 @@ def create_skill(
         source_path=payload.source_path.strip(),
         trust_status=_normalize_trust_status(payload.trust_status),
     )
+    if endpoint is not None:
+        assign_skills_to_endpoint(endpoint, [skill.id])
     append_audit_log(
         db,
         current_user,
         "skills",
         "create" if created else "update-from-create",
-        f"{'created' if created else 'updated'} skill {skill.skill_name}",
+        f"{'created' if created else 'updated'} skill {skill.skill_name} scope={payload.ai_endpoint_id or 'global'}",
     )
     db.commit()
     db.refresh(skill)
@@ -628,6 +654,7 @@ def import_skill_directory(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("admin")),
 ):
+    endpoint = _get_ai_endpoint_or_404(db, payload.ai_endpoint_id) if payload.ai_endpoint_id is not None else None
     try:
         result = import_skills_from_directory(
             db,
@@ -641,12 +668,14 @@ def import_skill_directory(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     imported_items = [*result.created, *result.updated]
+    if endpoint is not None and imported_items:
+        assign_skills_to_endpoint(endpoint, [item.id for item in imported_items])
     append_audit_log(
         db,
         current_user,
         "skills",
         "import-directory",
-        f"imported skill directory {payload.directory_path.strip()} created={len(result.created)} updated={len(result.updated)} skipped={len(result.skipped)}",
+        f"imported skill directory {payload.directory_path.strip()} created={len(result.created)} updated={len(result.updated)} skipped={len(result.skipped)} scope={payload.ai_endpoint_id or 'global'}",
     )
     db.commit()
     for item in imported_items:
@@ -670,6 +699,8 @@ def preview_import_skill_directory(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin")),
 ):
+    if payload.ai_endpoint_id is not None:
+        _get_ai_endpoint_or_404(db, payload.ai_endpoint_id)
     try:
         result = preview_skills_from_directory(
             db,
@@ -717,17 +748,16 @@ def scan_skills(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "analyst")),
 ):
+    endpoint = _get_ai_endpoint_or_404(db, payload.ai_endpoint_id) if payload.ai_endpoint_id is not None else None
+    scoped_skill_ids = set(get_endpoint_skill_ids(endpoint)) if endpoint is not None else set()
     skill_names: list[str] = []
-    skill_sources: list[dict[str, str]] = []
+    skill_sources: list[dict[str, object]] = []
     for skill_id in payload.skill_ids:
         skill = _get_skill_or_404(db, skill_id)
+        if endpoint is not None and skill.id not in scoped_skill_ids:
+            raise HTTPException(status_code=400, detail=f"skill {skill.id} is not assigned to ai endpoint {endpoint.id}")
         skill_names.append(skill.skill_name)
-        skill_sources.append(
-            {
-                "skill_name": skill.skill_name,
-                "source_path": skill.source_path,
-            }
-        )
+        skill_sources.append(serialize_skill_scan_source(skill))
 
     task = AttackTask(
         task_name="skill-scan-task",
@@ -742,6 +772,8 @@ def scan_skills(
             "skill_names": skill_names,
             "skill_sources": skill_sources,
             "requested_at": format_beijing(utc_now()) or "",
+            "scan_execution_mode": "prefer_remote_runtime" if endpoint is not None else "local_worker",
+            **({"ai_endpoint_id": endpoint.id} if endpoint is not None else {}),
         }
     )
     db.add(task)
@@ -750,7 +782,7 @@ def scan_skills(
         current_user,
         "skills",
         "scan",
-        f"queued skill scan for {len(payload.skill_ids)} skill(s)",
+        f"queued skill scan for {len(payload.skill_ids)} skill(s) scope={payload.ai_endpoint_id or 'global'}",
     )
     db.commit()
     db.refresh(task)

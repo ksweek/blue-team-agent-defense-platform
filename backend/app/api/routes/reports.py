@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ...core.response import success
 from ...db.session import get_db
 from ...models import AttackTask, Report, SecurityEvent, User
-from ...schemas.task import ReportBatchDownloadRequest, ReportGenerateRequest
+from ...schemas.task import ReportBatchDownloadRequest
 from ...services.audit import append_audit_log
 from ...services.authorization import require_roles
 from ...services.report_bundle import build_task_report_bundle
@@ -25,7 +25,6 @@ from ...services.report_export import (
     resolve_report_path,
 )
 from ...services.repository import contains_keyword, paginate
-from ...services.task_runner import build_report_for_task
 from ...services.time_utils import format_beijing
 
 router = APIRouter()
@@ -59,14 +58,14 @@ def _serialize_report(item: Report) -> dict:
 
 
 def _get_task_or_404(db: Session, task_id: int) -> AttackTask:
-    item = db.query(AttackTask).get(task_id)
+    item = db.get(AttackTask, task_id)
     if item is None:
         raise HTTPException(status_code=404, detail="attack task not found")
     return item
 
 
 def _get_report_or_404(db: Session, report_id: int) -> Report:
-    item = db.query(Report).get(report_id)
+    item = db.get(Report, report_id)
     if item is None:
         raise HTTPException(status_code=404, detail="report not found")
     return item
@@ -79,28 +78,6 @@ def _get_latest_event_for_task(db: Session, task_id: int) -> SecurityEvent | Non
         .order_by(SecurityEvent.created_at.desc(), SecurityEvent.id.desc())
         .first()
     )
-
-
-@router.post("/generate")
-def generate_report(
-    payload: ReportGenerateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "analyst")),
-):
-    task = _get_task_or_404(db, payload.task_id)
-    event = _get_latest_event_for_task(db, task.id)
-    item = build_report_for_task(
-        db,
-        task,
-        report_type=payload.report_type,
-        created_by=current_user.id,
-        event=event,
-    )
-    append_audit_log(db, current_user, "reports", "generate", f"generated report for task {task.id}")
-    db.commit()
-    db.refresh(item)
-    db.refresh(task)
-    return success(_serialize_report(item), message="report generated")
 
 
 @router.post("/batch-download")

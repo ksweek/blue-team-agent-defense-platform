@@ -1,4 +1,4 @@
-# 蓝队防御管理平台后端
+# GuardianAgent 后端
 
 后端基于 `FastAPI + SQLAlchemy + JWT + 可嵌入/外置 Worker + 多 Provider 接入 + 网关代理`。
 

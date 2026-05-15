@@ -126,7 +126,7 @@ def sessions(
     for item in tasks:
         event = None
         if item.latest_event_id:
-            event = db.query(SecurityEvent).get(item.latest_event_id)
+            event = db.get(SecurityEvent, item.latest_event_id)
         if event is None:
             event = (
                 db.query(SecurityEvent)

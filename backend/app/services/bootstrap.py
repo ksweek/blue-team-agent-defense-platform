@@ -23,7 +23,9 @@ from ..models import (
     AuditLog,
     DefenseConfig,
     DefensePolicy,
+    ManagedRuntime,
     Report,
+    RuntimeEnrollmentToken,
     SecurityEvent,
     Skill,
     SystemSetting,
@@ -175,6 +177,24 @@ def _ensure_model_columns() -> None:
         AiEndpoint.__table__,
         [
             "endpoint_group",
+            "governance_json",
+        ],
+    )
+    _ensure_table_columns(
+        RuntimeEnrollmentToken.__table__,
+        [
+            "delivery_mode",
+            "bootstrap_code_hash",
+            "bootstrap_code_hint",
+        ],
+    )
+    _ensure_table_columns(
+        ManagedRuntime.__table__,
+        [
+            "activation_code_hash",
+            "activation_code_hint",
+            "activation_issued_at",
+            "activation_expires_at",
         ],
     )
     _ensure_table_columns(
@@ -283,7 +303,7 @@ def _seed_defense_configs(db) -> None:
 
 
 def _seed_defense_policy(db) -> None:
-    policy = db.query(DefensePolicy).get(1)
+    policy = db.get(DefensePolicy, 1)
     if policy is None:
         policy = DefensePolicy(id=1)
         db.add(policy)

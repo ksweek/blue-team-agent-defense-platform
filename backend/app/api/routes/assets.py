@@ -98,14 +98,14 @@ def _serialize_whitelist(item: AssetWhitelist) -> dict:
 
 
 def _get_asset_or_404(db: Session, asset_id: int) -> Asset:
-    item = db.query(Asset).get(asset_id)
+    item = db.get(Asset, asset_id)
     if item is None:
         raise HTTPException(status_code=404, detail="asset not found")
     return item
 
 
 def _get_whitelist_or_404(db: Session, whitelist_id: int) -> AssetWhitelist:
-    item = db.query(AssetWhitelist).get(whitelist_id)
+    item = db.get(AssetWhitelist, whitelist_id)
     if item is None:
         raise HTTPException(status_code=404, detail="asset whitelist not found")
     return item

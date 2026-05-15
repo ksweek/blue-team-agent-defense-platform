@@ -46,7 +46,7 @@ def build_task_report_bundle(
             manifest_items.append(manifest_item)
             continue
 
-        report = db.query(Report).get(task.latest_report_id)
+        report = db.get(Report, task.latest_report_id)
         if report is None:
             manifest_item["reason"] = "report_record_missing"
             manifest_items.append(manifest_item)
@@ -117,7 +117,7 @@ def build_task_report_bundle(
 
 def _resolve_event_for_task(db: Session, task: AttackTask) -> SecurityEvent | None:
     if task.latest_event_id:
-        event = db.query(SecurityEvent).get(task.latest_event_id)
+        event = db.get(SecurityEvent, task.latest_event_id)
         if event is not None:
             return event
 

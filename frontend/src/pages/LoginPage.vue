@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import BrandLogo from '../components/BrandLogo.vue'
 import { login } from '../services/auth'
 
 const router = useRouter()
@@ -31,7 +32,7 @@ async function submit() {
   <section class="login-shell">
     <article class="login-panel">
       <div class="login-head">
-        <div class="login-brand-mark">蓝</div>
+        <BrandLogo class="login-brand-mark" />
         <div class="login-copy">
           <span class="login-kicker">蓝队防御平台</span>
           <h1>登录</h1>

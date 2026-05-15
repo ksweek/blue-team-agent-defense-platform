@@ -1,6 +1,6 @@
 import type { AiEndpointItem, FormFieldTone } from '../../services/api'
 import { redactSensitiveText } from '../../services/redaction'
-import { PROTECTION_MODE_LABELS, PROVIDER_LABELS, type ProtectionMode } from './constants'
+import { PROTECTION_MODE_LABELS, TARGET_TYPE_LABELS, type ProtectionMode } from './constants'
 
 type Tone = FormFieldTone
 
@@ -53,9 +53,12 @@ export function endpointStatusLabel(item: AiEndpointItem) {
 }
 
 export function endpointSummaryText(item: AiEndpointItem) {
-  return `${PROVIDER_LABELS[item.provider_type]} / ${item.model_name}`
+  return `${TARGET_TYPE_LABELS[item.target_type as 'openclaw_control' | 'standard_api'] ?? item.target_label ?? item.target_type} / ${normalizeGroup(item.endpoint_group)}`
 }
 
 export function endpointMetaText(item: AiEndpointItem) {
+  if (item.target_type === 'openclaw_control') {
+    return `Runtime 桥接 / 在线 ${item.usage_summary.runtime_online_count} / 已绑定 ${item.usage_summary.runtime_count}`
+  }
   return redactSensitiveText(item.base_url)
 }

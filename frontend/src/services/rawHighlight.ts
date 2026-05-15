@@ -62,9 +62,9 @@ const AUTHORIZATION_VALUE_RE = /(\bAuthorization\b\s*[:=]\s*(?:Bearer|Basic)\s+)
 const QUERY_SECRET_RE =
   /([?&](?:api[_-]?key|access_token|refresh_token|token|sig(?:nature)?|auth|password|secret|client_secret)=)([^&#\s]+)/gi
 const JSON_SECRET_VALUE_RE =
-  /("?(?:api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|smtp_password|smtpPassword|password|passwd|pwd|secret|client[_-]?secret|clientSecret|private[_-]?key|privateKey|handoff_token|handoffToken|x-api-key|x_api_key|bearer[_-]?token|bearerToken|session[_-]?token|sessionToken|jwt)"?\s*:\s*")([^"]+)(")/gi
+  /("?(?:api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|smtp_password|smtpPassword|qq_email_auth_code|qqEmailAuthCode|password|passwd|pwd|secret|client[_-]?secret|clientSecret|private[_-]?key|privateKey|handoff_token|handoffToken|x-api-key|x_api_key|bearer[_-]?token|bearerToken|session[_-]?token|sessionToken|jwt)"?\s*:\s*")([^"]+)(")/gi
 const TEXT_SECRET_VALUE_RE =
-  /(\b(?:api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|smtp_password|smtpPassword|password|passwd|pwd|secret|client[_-]?secret|clientSecret|private[_-]?key|privateKey|handoff_token|handoffToken|x-api-key|x_api_key|bearer[_-]?token|bearerToken|session[_-]?token|sessionToken|jwt)\b\s*[:=]\s*)([^\s"',}]+)/gi
+  /(\b(?:api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|smtp_password|smtpPassword|qq_email_auth_code|qqEmailAuthCode|password|passwd|pwd|secret|client[_-]?secret|clientSecret|private[_-]?key|privateKey|handoff_token|handoffToken|x-api-key|x_api_key|bearer[_-]?token|bearerToken|session[_-]?token|sessionToken|jwt)\b\s*[:=]\s*)([^\s"',}]+)/gi
 const COOKIE_RE = /(\b(?:cookie|set-cookie)\b\s*[:=]\s*)([^\r\n]+)/gi
 const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g
 const OPENAI_KEY_RE = /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g

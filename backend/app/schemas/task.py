@@ -42,11 +42,6 @@ class AttackTaskRetryRequest(BaseModel):
     schedule_at: Optional[datetime] = None
 
 
-class ReportGenerateRequest(BaseModel):
-    task_id: int
-    report_type: str
-
-
 class ReportBatchDownloadRequest(BaseModel):
     task_ids: list[int]
     include_manifest: bool = True
@@ -89,6 +84,12 @@ class RuntimeTaskAuthorizeRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     handoff_token: Optional[str] = None
+    call_id: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    operation_type: Optional[str] = None
+    event_name: Optional[str] = None
+    request_args_hash: Optional[str] = None
+    mcp_ticket_key: Optional[str] = None
     requested_scopes: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -101,5 +102,12 @@ class RuntimeTaskComplete(BaseModel):
     raw_response_text: Optional[str] = None
     raw_response_json: Optional[Union[dict[str, Any], list[Any]]] = None
     report_type: str = "runtime_execution"
+    call_id: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    operation_type: Optional[str] = None
+    event_name: Optional[str] = None
+    request_args_hash: Optional[str] = None
+    mcp_ticket_key: Optional[str] = None
+    consume_mcp_ticket: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
     event: Optional[RuntimeEventPayload] = None

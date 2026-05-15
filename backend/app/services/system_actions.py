@@ -123,7 +123,7 @@ def _create_platform_backup(db: Session) -> tuple[str, str, str]:
 
 def _refresh_permission_cache(db: Session) -> tuple[str, str, str]:
     refreshed_at = beijing_now()
-    setting = db.query(SystemSetting).get("permission_cache_refreshed_at")
+    setting = db.get(SystemSetting, "permission_cache_refreshed_at")
     value = refreshed_at.isoformat()
     if setting is None:
         setting = SystemSetting(

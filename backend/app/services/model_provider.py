@@ -24,7 +24,18 @@ class ProviderConfigurationError(RuntimeError):
 
 
 class ProviderExecutionError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        failure_type: str = "provider_execution",
+    ):
+        super().__init__(message)
+        self.retryable = bool(retryable)
+        self.status_code = status_code
+        self.failure_type = failure_type
 
 
 @dataclass
@@ -52,6 +63,43 @@ class ProviderResult:
     endpoint_id: int | None = None
     endpoint_key: str = ""
     endpoint_name: str = ""
+
+
+def _is_retryable_http_status(status_code: int) -> bool:
+    return status_code in {408, 425, 429} or 500 <= status_code < 600
+
+
+def _provider_http_error(status_code: int, detail: str) -> ProviderExecutionError:
+    return ProviderExecutionError(
+        f"Provider HTTP {status_code}: {detail}",
+        retryable=_is_retryable_http_status(status_code),
+        status_code=status_code,
+        failure_type="http_error",
+    )
+
+
+def _provider_connection_error(reason: Any) -> ProviderExecutionError:
+    return ProviderExecutionError(
+        f"Provider connection failed: {reason}",
+        retryable=True,
+        failure_type="connection_failed",
+    )
+
+
+def _provider_timeout_error() -> ProviderExecutionError:
+    return ProviderExecutionError(
+        "Provider request timed out.",
+        retryable=True,
+        failure_type="timeout",
+    )
+
+
+def _provider_invalid_json_error(body: str) -> ProviderExecutionError:
+    return ProviderExecutionError(
+        f"Provider returned non-JSON content: {body[:200]}",
+        retryable=False,
+        failure_type="invalid_json",
+    )
 
 
 class ProviderStreamSession:
@@ -688,7 +736,7 @@ def _execute_request(request: urllib.request.Request, endpoint: ProviderEndpoint
             duration_ms,
             _truncate(detail),
         )
-        raise ProviderExecutionError(f"Provider HTTP {exc.code}: {detail}") from exc
+        raise _provider_http_error(exc.code, detail) from exc
     except urllib.error.URLError as exc:
         duration_ms = int((perf_counter() - started_at) * 1000)
         logger.error(
@@ -699,7 +747,7 @@ def _execute_request(request: urllib.request.Request, endpoint: ProviderEndpoint
             duration_ms,
             exc.reason,
         )
-        raise ProviderExecutionError(f"Provider connection failed: {exc.reason}") from exc
+        raise _provider_connection_error(exc.reason) from exc
     except TimeoutError as exc:
         duration_ms = int((perf_counter() - started_at) * 1000)
         logger.error(
@@ -709,7 +757,7 @@ def _execute_request(request: urllib.request.Request, endpoint: ProviderEndpoint
             endpoint.model,
             duration_ms,
         )
-        raise ProviderExecutionError("Provider request timed out.") from exc
+        raise _provider_timeout_error() from exc
 
     duration_ms = int((perf_counter() - started_at) * 1000)
     logger.info(
@@ -764,7 +812,7 @@ def _iter_openai_like_stream(
             exc.code,
             _truncate(detail),
         )
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_http_error(exc.code, detail) from exc
     except urllib.error.URLError as exc:
         session.error = f"Provider connection failed: {exc.reason}"
         logger.error(
@@ -774,7 +822,7 @@ def _iter_openai_like_stream(
             endpoint.model,
             exc.reason,
         )
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_connection_error(exc.reason) from exc
     except TimeoutError as exc:
         session.error = "Provider request timed out."
         logger.error(
@@ -783,7 +831,7 @@ def _iter_openai_like_stream(
             endpoint.endpoint_key,
             endpoint.model,
         )
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_timeout_error() from exc
     except json.JSONDecodeError as exc:
         session.error = "Provider stream returned invalid JSON."
         logger.error(
@@ -792,7 +840,7 @@ def _iter_openai_like_stream(
             endpoint.endpoint_key,
             endpoint.model,
         )
-        raise ProviderExecutionError(session.error) from exc
+        raise ProviderExecutionError(session.error, failure_type="invalid_json") from exc
 
     duration_ms = int((perf_counter() - started_at) * 1000)
     logger.info(
@@ -849,16 +897,16 @@ def _iter_anthropic_stream(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         session.error = f"Provider HTTP {exc.code}: {detail}"
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_http_error(exc.code, detail) from exc
     except urllib.error.URLError as exc:
         session.error = f"Provider connection failed: {exc.reason}"
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_connection_error(exc.reason) from exc
     except TimeoutError as exc:
         session.error = "Provider request timed out."
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_timeout_error() from exc
     except json.JSONDecodeError as exc:
         session.error = "Provider stream returned invalid JSON."
-        raise ProviderExecutionError(session.error) from exc
+        raise ProviderExecutionError(session.error, failure_type="invalid_json") from exc
 
     duration_ms = int((perf_counter() - started_at) * 1000)
     logger.info(
@@ -912,16 +960,16 @@ def _iter_ollama_stream(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         session.error = f"Provider HTTP {exc.code}: {detail}"
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_http_error(exc.code, detail) from exc
     except urllib.error.URLError as exc:
         session.error = f"Provider connection failed: {exc.reason}"
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_connection_error(exc.reason) from exc
     except TimeoutError as exc:
         session.error = "Provider request timed out."
-        raise ProviderExecutionError(session.error) from exc
+        raise _provider_timeout_error() from exc
     except json.JSONDecodeError as exc:
         session.error = "Provider stream returned invalid JSON."
-        raise ProviderExecutionError(session.error) from exc
+        raise ProviderExecutionError(session.error, failure_type="invalid_json") from exc
 
     duration_ms = int((perf_counter() - started_at) * 1000)
     logger.info(
@@ -945,7 +993,7 @@ def _load_response_json(body: str, endpoint: ProviderEndpoint) -> dict[str, Any]
             endpoint.model,
             _truncate(body),
         )
-        raise ProviderExecutionError(f"Provider returned non-JSON content: {body[:200]}") from exc
+        raise _provider_invalid_json_error(body) from exc
 
 
 def _build_result(

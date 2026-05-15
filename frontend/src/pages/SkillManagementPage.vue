@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import AiScopeBanner from '../components/AiScopeBanner.vue'
 import PageSection from '../components/PageSection.vue'
 import StatusPill from '../components/StatusPill.vue'
 import { useAsyncData } from '../composables/useAsyncData'
@@ -233,6 +235,13 @@ const FALLBACK_SKILL_RESULT_META: SkillResultMeta = {
   ],
 }
 
+const route = useRoute()
+const scopedEndpointId = computed(() => {
+  const value = route.query.ai_endpoint_id
+  const parsed = Number(Array.isArray(value) ? value[0] : value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+})
+
 const currentSkillPage = ref(1)
 const currentScanTaskPage = ref(1)
 const expandedActionKeys = ref<Record<string, boolean>>({})
@@ -243,6 +252,7 @@ const { data, loading, error, refresh } = useAsyncData(
       page_size: SKILL_PAGE_SIZE,
       scan_task_page: currentScanTaskPage.value,
       scan_task_page_size: SCAN_TASK_PAGE_SIZE,
+      ai_endpoint_id: scopedEndpointId.value,
     })
     return { skills }
   },
@@ -338,6 +348,7 @@ const activeScanCount = computed(
     scanTaskResultItems.value.filter((item) => item.status === 'queued' || item.status === 'running').length
 )
 const isMutating = computed(() => activeKey.value !== null)
+const scopeModeLabel = computed(() => (scopedEndpointId.value ? '当前目标' : '全局'))
 
 useRouteSectionFocus()
 
@@ -348,6 +359,12 @@ watch(
   },
   { immediate: true }
 )
+
+watch(scopedEndpointId, () => {
+  currentSkillPage.value = 1
+  currentScanTaskPage.value = 1
+  void refresh()
+})
 
 watch(skillTotalPages, (totalPages) => {
   if (currentSkillPage.value > totalPages) {
@@ -780,6 +797,7 @@ async function refreshTaskItems() {
       page_size: SKILL_PAGE_SIZE,
       scan_task_page: currentScanTaskPage.value,
       scan_task_page_size: SCAN_TASK_PAGE_SIZE,
+      ai_endpoint_id: scopedEndpointId.value,
     })
     data.value = {
       ...data.value,
@@ -885,6 +903,7 @@ function buildImportPayload() {
     provider: importSkillDraft.provider,
     trust_status: importSkillDraft.trust_status,
     recursive: importSkillDraft.recursive,
+    ai_endpoint_id: scopedEndpointId.value,
   }
 }
 
@@ -962,6 +981,7 @@ async function createSkill() {
       provider: createSkillDraft.provider,
       source_path: createSkillDraft.source_path.trim(),
       trust_status: createSkillDraft.trust_status,
+      ai_endpoint_id: scopedEndpointId.value,
     })
     currentSkillPage.value = 1
     await refresh()
@@ -989,6 +1009,7 @@ async function importSkillDirectory() {
       provider: importSkillDraft.provider,
       trust_status: importSkillDraft.trust_status,
       recursive: importSkillDraft.recursive,
+      ai_endpoint_id: scopedEndpointId.value,
     })
     applyImportedSkills(result)
     resetImportSkillDraft()
@@ -1073,7 +1094,7 @@ async function scanSelectedSkills() {
   )
 
   try {
-    const task = await api.scanSkills(selectedSkillIds.value)
+    const task = await api.scanSkills(selectedSkillIds.value, scopedEndpointId.value)
     await refreshTaskItems()
     const execution = await api.runAttackTask(task.id)
     await refreshTaskItems()
@@ -1114,9 +1135,33 @@ async function scanSelectedSkills() {
 </script>
 
 <template>
-  <section class="page-grid">
+  <section :class="['page-grid', { 'scoped-ai-page': scopedEndpointId }]">
+    <AiScopeBanner
+      :endpoint-id="scopedEndpointId"
+      global-title="全局 Skill 治理"
+      global-summary=""
+    />
+    <section v-if="scopedEndpointId" class="scoped-context-callout tone-safe">
+      <div class="scoped-context-callout-copy">
+        <strong>当前 Skill 只绑定这个受保护目标</strong>
+      </div>
+      <div class="scoped-context-actions">
+        <RouterLink
+          class="primary-button small"
+          :to="{ name: 'ai-endpoints-detail', params: { endpointId: String(scopedEndpointId) } }"
+        >
+          返回目标治理
+        </RouterLink>
+        <RouterLink class="ghost-button small" :to="{ name: 'skill-management' }">全局 Skill</RouterLink>
+      </div>
+    </section>
     <section class="content-grid two-column skill-workbench-grid">
-      <PageSection eyebrow="技能" title="技能信任治理" tag="审批" tone="safe">
+      <PageSection
+        :eyebrow="scopeModeLabel"
+        :title="`${scopeModeLabel} Skill 信任治理`"
+        :tag="scopedEndpointId ? '目标专属' : '共享审批'"
+        tone="safe"
+      >
         <template #toolbar>
           <div class="section-toolbar">
             <div class="section-toolbar-copy">

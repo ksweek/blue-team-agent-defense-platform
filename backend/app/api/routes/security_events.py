@@ -108,7 +108,7 @@ def _build_event_task_map(db: Session, items: list[SecurityEvent]) -> dict[int, 
 
 
 def _get_security_event_or_404(db: Session, event_id: int) -> SecurityEvent:
-    item = db.query(SecurityEvent).get(event_id)
+    item = db.get(SecurityEvent, event_id)
     if item is None:
         raise HTTPException(status_code=404, detail="security event not found")
     return item
@@ -161,7 +161,7 @@ def _get_report_for_task(db: Session, task: AttackTask | None) -> Report | None:
         return None
 
     if task.latest_report_id:
-        item = db.query(Report).get(task.latest_report_id)
+        item = db.get(Report, task.latest_report_id)
         if item is not None:
             return item
 
@@ -213,38 +213,12 @@ def batch_handle_events(
         normalized_status = normalize_event_status(payload.status, EVENT_STATUS_SUSPICIOUS)
         item.status = normalized_status
         _append_operation_log(item, current_user.username, normalized_status)
-        task = db.query(AttackTask).get(item.task_id) if item.task_id else None
+        task = db.get(AttackTask, item.task_id) if item.task_id else None
         updated_items.append(_serialize_security_event(item, task))
 
     append_audit_log(db, current_user, "security-events", "batch-handle", f"updated {len(updated_items)} events")
     db.commit()
     return success({"items": updated_items, "total": len(updated_items)}, message="batch handled")
-
-
-@router.get("/export")
-def export_security_events(
-    event_type: Optional[str] = None,
-    event_level: Optional[str] = None,
-    status: Optional[str] = None,
-    keyword: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_roles("admin", "analyst")),
-):
-    events = db.query(SecurityEvent).order_by(SecurityEvent.created_at.desc(), SecurityEvent.id.desc()).all()
-    task_map = _build_event_task_map(db, events)
-    items = [_serialize_security_event(item, task_map.get(item.task_id or 0)) for item in events]
-    items = _filter_security_events(
-        items,
-        event_type=event_type,
-        event_level=event_level,
-        status=status,
-        keyword=keyword,
-        start_time=start_time,
-        end_time=end_time,
-    )
-    return success({"file": "security-events.csv", "count": len(items), "items": items})
 
 
 @router.get("/{event_id}")
@@ -254,7 +228,7 @@ def get_security_event(
     _: User = Depends(require_roles("admin", "analyst")),
 ):
     item = _get_security_event_or_404(db, event_id)
-    task = db.query(AttackTask).get(item.task_id) if item.task_id else None
+    task = db.get(AttackTask, item.task_id) if item.task_id else None
     return success(_serialize_security_event(item, task))
 
 
@@ -265,7 +239,7 @@ def get_security_event_report_view(
     _: User = Depends(require_roles("admin", "analyst")),
 ):
     item = _get_security_event_or_404(db, event_id)
-    task = db.query(AttackTask).get(item.task_id) if item.task_id else None
+    task = db.get(AttackTask, item.task_id) if item.task_id else None
     report = _get_report_for_task(db, task)
     analytics = build_security_event_report_view(db, event=item, task=task, report=report)
 
@@ -293,5 +267,5 @@ def update_security_event_status(
     append_audit_log(db, current_user, "security-events", "update-status", f"updated event {event_id}")
     db.commit()
     db.refresh(item)
-    task = db.query(AttackTask).get(item.task_id) if item.task_id else None
+    task = db.get(AttackTask, item.task_id) if item.task_id else None
     return success(_serialize_security_event(item, task), message="status updated")

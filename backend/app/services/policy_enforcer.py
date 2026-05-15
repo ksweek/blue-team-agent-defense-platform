@@ -6,7 +6,16 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ..models import Asset, AssetWhitelist, AttackTask, DefenseConfig, Skill
+from ..models import Asset, AssetWhitelist, AttackTask, Skill
+from .endpoint_governance import resolve_control_modes
+from .mcp_security import (
+    action_has_mcp_surface,
+    action_is_tool_result,
+    find_mcp_capability_policy_in_state,
+    find_mcp_server_policy_in_state,
+    resolve_effective_mcp_policy_state,
+    validate_mcp_execution_ticket,
+)
 from .task_runner import (
     _assess_task_with_rules,
     _get_defense_policy_or_default,
@@ -31,6 +40,17 @@ HIGH_RISK_SCOPES = {
     "secrets",
     "privileged",
 }
+RESTRICTED_APPROVAL_SCOPES = {
+    "request",
+    "navigate",
+    "workspace.scan",
+    "write",
+    "delete",
+    "exec",
+    "shell",
+    "network",
+}
+RESTRICTED_RISK_LEVELS = {"medium", "high"}
 
 RULE_CONTROL_MAP: dict[str, tuple[str, ...]] = {
     "intent-scan": ("prompt_injection_firewall",),
@@ -148,8 +168,12 @@ def authorize_runtime_action(
 
 
 def _authorize(db: Session, *, task: AttackTask, payload: dict[str, Any]) -> AuthorizationDecision:
-    policy = _get_defense_policy_or_default(db)
-    control_modes = _load_control_modes(db)
+    raw_endpoint_id = task.params.get("ai_endpoint_id")
+    ai_endpoint_id = raw_endpoint_id if isinstance(raw_endpoint_id, int) else None
+    if ai_endpoint_id is None and isinstance(raw_endpoint_id, str) and raw_endpoint_id.strip().isdigit():
+        ai_endpoint_id = int(raw_endpoint_id.strip())
+    policy = _get_defense_policy_or_default(db, ai_endpoint_id=ai_endpoint_id)
+    control_modes = _load_control_modes(db, ai_endpoint_id=ai_endpoint_id)
     issues: list[AuthorizationIssue] = []
     issue_keys: set[tuple[str, str, str, str]] = set()
     matched_rules: list[str] = []
@@ -223,7 +247,7 @@ def _authorize(db: Session, *, task: AttackTask, payload: dict[str, Any]) -> Aut
     _apply_path_checks(db, payload, policy.protected_paths if policy is not None else [], add_issue)
     _apply_skill_checks(db, payload, policy.protected_skills if policy is not None else [], add_issue)
     _apply_plugin_checks(db, payload, policy.protected_plugins if policy is not None else [], add_issue)
-    _apply_mcp_checks(payload, add_issue)
+    _apply_mcp_checks(db, task=task, ai_endpoint_id=ai_endpoint_id, payload=payload, add_issue=add_issue)
     _apply_approval_checks(payload, add_issue)
 
     if decision == DECISION_ALLOW:
@@ -279,6 +303,7 @@ def _normalize_action_payload(task: AttackTask, action: dict[str, Any]) -> dict[
             params.get("plugin_names"),
             params.get("plugin_name"),
         ),
+        "call_id": str(action.get("call_id") or metadata.get("ws_call_id") or params.get("call_id") or "").strip(),
         "source_plugin": str(action.get("source_plugin") or metadata.get("source_plugin") or params.get("source_plugin") or "").strip(),
         "target_plugin": str(action.get("target_plugin") or metadata.get("target_plugin") or params.get("target_plugin") or "").strip(),
         "mcp_server": str(action.get("mcp_server") or metadata.get("mcp_server") or params.get("mcp_server") or "").strip(),
@@ -286,6 +311,44 @@ def _normalize_action_payload(task: AttackTask, action: dict[str, Any]) -> dict[
         "session_id": str(action.get("session_id") or metadata.get("session_id") or params.get("session_id") or "").strip(),
         "approval_id": str(action.get("approval_id") or metadata.get("approval_id") or params.get("approval_id") or "").strip(),
         "handoff_token": str(action.get("handoff_token") or metadata.get("handoff_token") or params.get("handoff_token") or "").strip(),
+        "tool_call_id": str(
+            action.get("tool_call_id")
+            or metadata.get("tool_call_id")
+            or metadata.get("openclaw_tool_call_id")
+            or params.get("tool_call_id")
+            or ""
+        ).strip(),
+        "operation_type": str(
+            action.get("operation_type")
+            or metadata.get("operation_type")
+            or metadata.get("openclaw_operation_type")
+            or params.get("operation_type")
+            or ""
+        ).strip().lower(),
+        "event_name": str(
+            action.get("event_name")
+            or metadata.get("event_name")
+            or metadata.get("openclaw_event_name")
+            or params.get("event_name")
+            or ""
+        ).strip(),
+        "mcp_ticket_key": str(
+            action.get("mcp_ticket_key")
+            or metadata.get("mcp_ticket_key")
+            or params.get("mcp_ticket_key")
+            or ""
+        ).strip(),
+        "request_args_hash": str(
+            action.get("request_args_hash")
+            or metadata.get("request_args_hash")
+            or params.get("request_args_hash")
+            or ""
+        ).strip(),
+        "consume_mcp_ticket": bool(
+            action.get("consume_mcp_ticket")
+            or metadata.get("consume_mcp_ticket")
+            or params.get("consume_mcp_ticket")
+        ),
         "requested_scopes": _normalize_string_list(
             action.get("requested_scopes"),
             metadata.get("requested_scopes"),
@@ -469,19 +532,171 @@ def _apply_plugin_checks(
         )
 
 
-def _apply_mcp_checks(payload: dict[str, Any], add_issue) -> None:
-    if not payload["mcp_server"] and not payload["capability_name"]:
+def _apply_mcp_checks(
+    db: Session,
+    *,
+    task: AttackTask,
+    ai_endpoint_id: int | None,
+    payload: dict[str, Any],
+    add_issue,
+) -> None:
+    if not action_has_mcp_surface(payload):
         return
 
-    if not payload["session_id"] or not payload["approval_id"]:
+    target = payload["capability_name"] or payload["mcp_server"] or payload["tool_call_id"] or payload["call_id"]
+    requested_scopes = {item.lower() for item in payload["requested_scopes"]}
+    state = resolve_effective_mcp_policy_state(db, ai_endpoint_id=ai_endpoint_id)
+    explicit_registry = state.strict_allowlist
+    server_policy = find_mcp_server_policy_in_state(
+        state,
+        ai_endpoint_id=ai_endpoint_id,
+        server_name=payload["mcp_server"],
+    )
+    capability_policy = find_mcp_capability_policy_in_state(
+        state,
+        ai_endpoint_id=ai_endpoint_id,
+        server_name=payload["mcp_server"],
+        capability_name=payload["capability_name"],
+    )
+
+    if explicit_registry:
+        if payload["mcp_server"] and server_policy is None:
+            add_issue(
+                "mcp_capability_binding",
+                "mcp-session-bind",
+                DECISION_DENY,
+                "MCP server is not in the allowlist",
+                f"MCP server {payload['mcp_server']} is not registered for this AI target.",
+                target=target,
+            )
+        if payload["capability_name"] and capability_policy is None:
+            add_issue(
+                "mcp_capability_binding",
+                "mcp-session-bind",
+                DECISION_DENY,
+                "MCP capability is not in the allowlist",
+                f"MCP capability {payload['capability_name']} is not registered for this AI target.",
+                target=target,
+            )
+
+    if server_policy is not None:
+        trust_mode = str(server_policy.trust_mode or "").strip().lower()
+        if not server_policy.enabled or trust_mode == "blocked":
+            add_issue(
+                "mcp_capability_binding",
+                "mcp-session-bind",
+                DECISION_DENY,
+                "MCP server is blocked",
+                f"MCP server {payload['mcp_server']} is disabled or blocked by policy.",
+                target=target,
+            )
+        allowed_scopes = {item.lower() for item in server_policy.allowed_scopes}
+        if requested_scopes and allowed_scopes and not requested_scopes.issubset(allowed_scopes):
+            add_issue(
+                "mcp_capability_binding",
+                "mcp-session-bind",
+                DECISION_DENY,
+                "MCP server scope escalation was blocked",
+                f"MCP server {payload['mcp_server']} only allows scopes {sorted(allowed_scopes)}.",
+                target=target,
+            )
+        if server_policy.require_approval and not payload["approval_id"]:
+            add_issue(
+                "approval_integrity_gate",
+                "tool-approval-gate",
+                DECISION_DENY,
+                "MCP server requires approval proof",
+                f"MCP server {payload['mcp_server']} requires approval_id before execution.",
+                target=target,
+            )
+        if trust_mode == "restricted" and not payload["approval_id"] and requested_scopes & RESTRICTED_APPROVAL_SCOPES:
+            add_issue(
+                "approval_integrity_gate",
+                "tool-approval-gate",
+                DECISION_DENY,
+                "Restricted MCP server requires approval for sensitive scopes",
+                f"MCP server {payload['mcp_server']} is restricted and sensitive scopes {sorted(requested_scopes & RESTRICTED_APPROVAL_SCOPES)} require approval_id.",
+                target=target,
+            )
+
+    if capability_policy is not None:
+        approval_mode = str(capability_policy.approval_mode or "").strip().lower()
+        risk_level = str(capability_policy.risk_level or "").strip().lower()
+        if not capability_policy.enabled or approval_mode == "deny":
+            add_issue(
+                "mcp_capability_binding",
+                "mcp-session-bind",
+                DECISION_DENY,
+                "MCP capability is blocked",
+                f"MCP capability {payload['capability_name']} is disabled or denied by policy.",
+                target=target,
+            )
+        allowed_scopes = {item.lower() for item in capability_policy.allowed_scopes}
+        if requested_scopes and allowed_scopes and not requested_scopes.issubset(allowed_scopes):
+            add_issue(
+                "mcp_capability_binding",
+                "mcp-session-bind",
+                DECISION_DENY,
+                "MCP capability scope escalation was blocked",
+                f"MCP capability {payload['capability_name']} only allows scopes {sorted(allowed_scopes)}.",
+                target=target,
+            )
+        if approval_mode == "required" and not payload["approval_id"]:
+            add_issue(
+                "approval_integrity_gate",
+                "tool-approval-gate",
+                DECISION_DENY,
+                "MCP capability requires approval proof",
+                f"MCP capability {payload['capability_name']} requires approval_id before execution.",
+                target=target,
+            )
+        if (
+            approval_mode == "inherit"
+            and server_policy is not None
+            and str(server_policy.trust_mode or "").strip().lower() == "restricted"
+            and not payload["approval_id"]
+            and (
+                bool(requested_scopes & RESTRICTED_APPROVAL_SCOPES)
+                or (not requested_scopes and risk_level in RESTRICTED_RISK_LEVELS)
+            )
+        ):
+            add_issue(
+                "approval_integrity_gate",
+                "tool-approval-gate",
+                DECISION_DENY,
+                "Restricted MCP capability requires approval",
+                f"MCP capability {payload['capability_name']} inherits a restricted server policy and needs approval_id for medium/high-risk execution.",
+                target=target,
+            )
+
+    if not payload["session_id"]:
         add_issue(
             "mcp_capability_binding",
             "mcp-session-bind",
             DECISION_DENY,
             "MCP capability call is missing binding data",
-            "MCP server and capability calls must include both session_id and approval_id.",
-            target=payload["capability_name"] or payload["mcp_server"],
+            "MCP tool calls and tool results must include session_id for request/result binding.",
+            target=target,
         )
+
+    if action_is_tool_result(payload):
+        validation = validate_mcp_execution_ticket(
+            db,
+            ticket_key=payload["mcp_ticket_key"],
+            task_id=task.id,
+            ai_endpoint_id=ai_endpoint_id,
+            action=payload,
+            consume=False,
+        )
+        if not validation.allowed:
+            add_issue(
+                "mcp_capability_binding",
+                "mcp-session-bind",
+                DECISION_DENY,
+                "MCP tool result binding failed",
+                validation.reason,
+                target=target or payload["mcp_ticket_key"],
+            )
 
 
 def _apply_approval_checks(payload: dict[str, Any], add_issue) -> None:
@@ -512,18 +727,12 @@ def _candidate_plugin_names(payload: dict[str, Any]) -> list[str]:
     )
 
 
-def _load_control_modes(db: Session) -> dict[str, str]:
-    items = db.query(DefenseConfig).order_by(DefenseConfig.id.asc()).all()
-    result: dict[str, str] = {}
-    for item in items:
-        if not item.enabled:
-            result[item.defense_type] = "off"
-            continue
-        normalized_mode = str(item.mode or "off").strip().lower()
-        if normalized_mode not in {"off", "observe", "enforce"}:
-            normalized_mode = "observe"
-        result[item.defense_type] = normalized_mode
-    return result
+def _load_control_modes(
+    db: Session,
+    *,
+    ai_endpoint_id: int | None = None,
+) -> dict[str, str]:
+    return resolve_control_modes(db, ai_endpoint_id=ai_endpoint_id)
 
 
 def _normalize_string_list(*values: Any) -> list[str]:

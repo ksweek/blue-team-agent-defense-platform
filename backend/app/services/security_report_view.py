@@ -24,11 +24,11 @@ QUERY_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 JSON_SECRET_VALUE_RE = re.compile(
-    r"(\"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|password|secret|handoff_token|x-api-key)\"?\s*:\s*\")([^\"]+)(\")",
+    r"(\"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|qq_email_auth_code|password|secret|handoff_token|x-api-key)\"?\s*:\s*\")([^\"]+)(\")",
     re.IGNORECASE,
 )
 TEXT_SECRET_VALUE_RE = re.compile(
-    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|password|secret|handoff_token|x-api-key)\b\s*[:=]\s*)([^\s\"',}]+)",
+    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|qq_email_auth_code|password|secret|handoff_token|x-api-key)\b\s*[:=]\s*)([^\s\"',}]+)",
     re.IGNORECASE,
 )
 COOKIE_RE = re.compile(r"(\b(?:cookie|set-cookie)\b\s*[:=]\s*)([^\r\n]+)", re.IGNORECASE)
@@ -81,7 +81,7 @@ def build_security_event_report_view(
 def _resolve_task(db: Session, event: SecurityEvent) -> AttackTask | None:
     if not event.task_id:
         return None
-    return db.query(AttackTask).get(event.task_id)
+    return db.get(AttackTask, event.task_id)
 
 
 def _resolve_report(db: Session, task: AttackTask | None) -> Report | None:
@@ -89,7 +89,7 @@ def _resolve_report(db: Session, task: AttackTask | None) -> Report | None:
         return None
 
     if task.latest_report_id:
-        item = db.query(Report).get(task.latest_report_id)
+        item = db.get(Report, task.latest_report_id)
         if item is not None:
             return item
 
@@ -479,6 +479,25 @@ def _unique_strings(items: list[str]) -> list[str]:
         if normalized and normalized not in unique:
             unique.append(normalized)
     return unique
+
+
+def _location_label(value: str | None) -> str:
+    location = str(value or "").strip()
+    if not location or location == "content":
+        return "正文"
+
+    labels = {
+        "params": "任务参数",
+        "runtime": "运行时",
+        "provider": "模型返回",
+        "metadata": "元数据",
+        "result": "处理结果",
+        "raw_response": "原始响应",
+        "content": "正文",
+    }
+
+    parts = [item for item in location.replace("[", ".[").split(".") if item]
+    return " / ".join(labels.get(part, part) for part in parts)
 
 
 def _build_snippet(text: str, pattern: str, radius: int = 48) -> str:

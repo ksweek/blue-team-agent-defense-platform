@@ -1,5 +1,7 @@
 import { computed, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import type {
+  AiReviewMode,
   AiEndpointConfigSecretItem,
   AiEndpointItem,
   AiEndpointSummary,
@@ -14,6 +16,8 @@ import { formatBeijingTime } from '../../services/time'
 import {
   PROTECTION_MODE_LABELS,
   PROVIDER_LABELS,
+  TARGET_TYPE_LABELS,
+  type TargetType,
   type ProtectionMode,
   type ProviderType,
   type Tone,
@@ -29,6 +33,7 @@ import {
 
 type DrawerMode = 'create' | 'detail'
 type SyncState = 'idle' | 'saving' | 'saved' | 'error'
+type RuleMode = 'enforce' | 'observe' | 'off'
 
 export type EndpointSecretDraft = AiEndpointConfigSecretItem & {
   next_value: string
@@ -39,6 +44,7 @@ export type EndpointForm = {
   endpoint_key: string
   display_name: string
   endpoint_group: string
+  target_type: TargetType
   provider_type: ProviderType
   base_url: string
   api_key: string
@@ -70,6 +76,8 @@ const EMPTY_RUNTIME_SUMMARY: RuntimeRegistrySummary = {
   tokens_active: 0,
   runtimes_total: 0,
   runtimes_pending: 0,
+  runtimes_activation_requested: 0,
+  runtimes_activation_issued: 0,
   runtimes_approved: 0,
   runtimes_active: 0,
   tokens_unbound: 0,
@@ -78,6 +86,7 @@ const EMPTY_RUNTIME_SUMMARY: RuntimeRegistrySummary = {
 }
 
 export function useAiEndpointsPage() {
+  const router = useRouter()
   const { data, loading, error, refresh } = useAsyncData(async () => {
     const [endpoints, runtimeRegistry] = await Promise.all([
       api.aiEndpoints(),
@@ -170,7 +179,7 @@ export function useAiEndpointsPage() {
 
   const topRailItems = computed(() => [
     {
-      label: 'AI 目标',
+      label: '接入目标',
       value: String(endpointSummary.value.total),
       tone: 'info' as Tone,
       meta: `${endpointSummary.value.group_count ?? 0} 个分组`,
@@ -203,8 +212,8 @@ export function useAiEndpointsPage() {
 
   const drawerTitle = computed(() =>
     drawerMode.value === 'create'
-      ? '新增 AI 目标'
-      : selectedEndpoint.value?.display_name || 'AI 目标配置'
+      ? '新增目标'
+      : selectedEndpoint.value?.display_name || '目标配置'
   )
 
   const drawerSummary = computed(() => {
@@ -214,10 +223,10 @@ export function useAiEndpointsPage() {
 
     const endpoint = selectedEndpoint.value
     if (!endpoint) {
-      return '当前没有可编辑的 AI 目标。'
+      return '当前没有可编辑的目标。'
     }
 
-    return `${PROVIDER_LABELS[endpoint.provider_type]} / ${normalizeGroup(endpoint.endpoint_group)} / ${endpoint.model_name}`
+    return `${TARGET_TYPE_LABELS[endpoint.target_type as 'openclaw_control' | 'standard_api'] ?? endpoint.target_label ?? endpoint.target_type} / ${normalizeGroup(endpoint.endpoint_group)}`
   })
 
   watch(
@@ -300,18 +309,16 @@ export function useAiEndpointsPage() {
   }
 
   function openCreateDrawer() {
-    drawerMode.value = 'create'
-    drawerOpen.value = true
-    clearTestResult()
-    Object.assign(drawerForm, blankEndpointForm(activeGroup.value, endpointItems.value.length))
+    void router.push({ name: 'ai-endpoints-create' })
   }
 
   function openEndpoint(item: AiEndpointItem) {
-    selectedEndpointId.value = item.id
-    drawerMode.value = 'detail'
-    drawerOpen.value = true
-    clearTestResult()
-    fillDrawerForm(drawerForm, item)
+    void router.push({
+      name: 'ai-endpoints-detail',
+      params: {
+        endpointId: String(item.id),
+      },
+    })
   }
 
   function closeDrawer() {
@@ -347,7 +354,7 @@ export function useAiEndpointsPage() {
 
   async function saveDrawer() {
     const createMode = drawerMode.value === 'create'
-    beginAction(createMode ? 'create-endpoint' : `save-endpoint-${selectedEndpointId.value}`, createMode ? '正在新增 AI 目标...' : '正在保存 AI 目标...')
+    beginAction(createMode ? 'create-endpoint' : `save-endpoint-${selectedEndpointId.value}`, createMode ? '正在新增目标...' : '正在保存目标...')
 
     try {
       if (createMode) {
@@ -364,7 +371,7 @@ export function useAiEndpointsPage() {
       }
 
       if (!selectedEndpoint.value) {
-        throw new Error('当前没有可编辑的 AI 目标')
+        throw new Error('当前没有可编辑的目标')
       }
 
       const payload = buildPayloadFromDrawer(drawerForm, Boolean(drawerForm.api_key.trim()))
@@ -464,7 +471,7 @@ export function useAiEndpointsPage() {
   }
 
   async function deleteEndpoint(item: AiEndpointItem) {
-    const confirmed = window.confirm(`确认删除 AI 目标“${item.display_name}”吗？`)
+    const confirmed = window.confirm(`确认删除目标“${item.display_name}”吗？`)
     if (!confirmed) {
       return
     }
@@ -509,6 +516,71 @@ export function useAiEndpointsPage() {
     }
   }
 
+  function normalizeRuleMode(mode: string): RuleMode {
+    if (mode === 'enforce' || mode === 'off') {
+      return mode
+    }
+    return 'observe'
+  }
+
+  function policyRulePayload(rule: {
+    key: string
+    title: string
+    description: string
+    enabled: boolean
+    mode: string
+  }) {
+    return {
+      key: rule.key,
+      title: rule.title,
+      description: rule.description,
+      enabled: rule.enabled,
+      mode: normalizeRuleMode(rule.mode),
+    }
+  }
+
+  async function enableEndpointAiReview(
+    item: AiEndpointItem,
+    mode: AiReviewMode = 'suspicious_review'
+  ) {
+    beginAction(`ai-review-${item.id}`, `正在为 ${item.display_name} 启用研判策略...`)
+    try {
+      const profile = await api.defensePolicy(item.id)
+      await api.updateDefensePolicy(
+        {
+          guard_rules: profile.guard_rules.map(policyRulePayload),
+          scan_rules: profile.scan_rules.map(policyRulePayload),
+          advanced_rule: policyRulePayload(profile.advanced_rule),
+          ai_review_policy: {
+            key: profile.ai_review_policy.key,
+            title: profile.ai_review_policy.title,
+            description: profile.ai_review_policy.description,
+            mode,
+            reviewer_ai_endpoint_id: null,
+          },
+          protected_paths: [...profile.protected_paths],
+          protected_skills: [...profile.protected_skills],
+          protected_plugins: [...profile.protected_plugins],
+        },
+        item.id
+      )
+
+      if (!item.enabled || !item.protection_enabled || item.protection_mode === 'off') {
+        await api.updateAiEndpoint(item.id, {
+          enabled: true,
+          protection_enabled: true,
+          protection_mode: item.protection_mode === 'enforce' ? 'enforce' : 'observe',
+        })
+      }
+
+      await refreshEndpoints()
+      selectedEndpointId.value = item.id
+      finishAction(`已为 ${item.display_name} 启用辅助研判，接口和密钥请在系统设置中配置`)
+    } catch (errorValue) {
+      failAction(errorValue)
+    }
+  }
+
   async function runBatchUpdate(
     actionKey: string,
     message: string,
@@ -517,7 +589,7 @@ export function useAiEndpointsPage() {
   ) {
     if (!selectedIds.value.length) {
       syncState.value = 'error'
-      syncMessage.value = '请先选择至少一个 AI 目标'
+      syncMessage.value = '请先选择至少一个目标'
       return
     }
 
@@ -532,7 +604,7 @@ export function useAiEndpointsPage() {
   }
 
   function refreshList() {
-    beginAction('refresh-endpoints', '正在刷新 AI 目标和接入状态...')
+    beginAction('refresh-endpoints', '正在刷新目标和接入状态...')
     void refreshEndpoints()
       .then(() => {
         finishAction('列表已刷新')
@@ -556,7 +628,7 @@ export function useAiEndpointsPage() {
     const endpoint = selectedEndpoint.value
     if (!endpoint) {
       syncState.value = 'error'
-      syncMessage.value = '请先选择一个 AI 目标，再生成注册码'
+      syncMessage.value = '请先选择一个目标，再生成注册码'
       return
     }
     if (!runtimeTokenLabel.value.trim()) {
@@ -587,7 +659,7 @@ export function useAiEndpointsPage() {
     const endpoint = selectedEndpoint.value
     if (!endpoint) {
       syncState.value = 'error'
-      syncMessage.value = '请先选择一个 AI 目标'
+      syncMessage.value = '请先选择一个目标'
       return
     }
 
@@ -616,7 +688,7 @@ export function useAiEndpointsPage() {
     const endpoint = selectedEndpoint.value
     if (!endpoint) {
       syncState.value = 'error'
-      syncMessage.value = '请先选择一个 AI 目标'
+      syncMessage.value = '请先选择一个目标'
       return
     }
 
@@ -658,7 +730,7 @@ export function useAiEndpointsPage() {
     const endpoint = selectedEndpoint.value
     if (!endpoint) {
       syncState.value = 'error'
-      syncMessage.value = '请先选择一个 AI 目标'
+      syncMessage.value = '请先选择一个目标'
       return
     }
 
@@ -704,7 +776,48 @@ export function useAiEndpointsPage() {
     }
   }
 
+  async function issueActivationCode(item: ManagedRuntimeItem) {
+    const expiresInput = window.prompt('请输入激活码有效期（分钟）', '10')
+    if (expiresInput === null) {
+      return
+    }
+
+    const expiresInMinutes = Math.max(1, Number.parseInt(expiresInput, 10) || 10)
+    beginAction(`activation-code-${item.id}`, `正在为 ${item.display_name} 生成激活码...`)
+    try {
+      const result = await api.issueRuntimeActivationCode(item.id, {
+        ai_endpoint_id: selectedEndpoint.value?.id ?? item.ai_endpoint?.id ?? null,
+        expires_in_minutes: expiresInMinutes,
+      })
+      await refreshEndpoints()
+      window.prompt(`请复制激活码并发送给客户端（有效期 ${expiresInMinutes} 分钟）`, result.activation_code)
+      finishAction(`已为 ${item.display_name} 生成激活码`)
+    } catch (errorValue) {
+      failAction(errorValue)
+    }
+  }
+
+  function manageEndpointDefense(item: AiEndpointItem) {
+    void router.push({
+      name: 'defense-config',
+      query: {
+        ai_endpoint_id: String(item.id),
+      },
+    })
+  }
+
+  function manageEndpointSkills(item: AiEndpointItem) {
+    void router.push({
+      name: 'skill-management',
+      query: {
+        ai_endpoint_id: String(item.id),
+      },
+    })
+  }
+
   function runtimeStatusLabel(item: ManagedRuntimeItem) {
+    if (item.status === 'activation_requested') return '待签发激活码'
+    if (item.status === 'activation_issued') return '待兑换激活码'
     if (item.status === 'pending') return '待审批'
     if (item.status === 'approved') return '待领凭据'
     if (item.status === 'active') return '已接入'
@@ -714,6 +827,8 @@ export function useAiEndpointsPage() {
   }
 
   function runtimeStatusTone(item: ManagedRuntimeItem): Tone {
+    if (item.status === 'activation_requested') return 'warn'
+    if (item.status === 'activation_issued') return 'info'
     if (item.status === 'pending') return 'warn'
     if (item.status === 'approved') return 'info'
     if (item.status === 'active') return item.is_online ? 'safe' : 'warn'
@@ -739,6 +854,50 @@ export function useAiEndpointsPage() {
 
   function bindingStateTone(item: { binding_state?: string | null }): Tone {
     return item.binding_state === 'bound' ? 'safe' : 'info'
+  }
+
+  function endpointRuntimeAttentionCount(item: AiEndpointItem) {
+    return item.usage_summary.runtime_pending_count
+  }
+
+  function endpointRoleLabel(item: AiEndpointItem) {
+    if (!item.enabled) return '未启用'
+    if (item.protection_enabled && item.protection_mode !== 'off') return '受保护目标'
+    if (item.usage_summary.runtime_count > 0) return '客户端目标'
+    return '研判端候选'
+  }
+
+  function endpointRoleTone(item: AiEndpointItem): Tone {
+    if (!item.enabled) return 'warn'
+    if (item.protection_enabled && item.protection_mode === 'enforce') return 'safe'
+    if (item.protection_enabled && item.protection_mode === 'observe') return 'warn'
+    return 'info'
+  }
+
+  function endpointNextStepLabel(item: AiEndpointItem) {
+    if (!item.enabled) return '启用这个接入'
+    if (endpointRuntimeAttentionCount(item) > 0) return '处理待审批客户端'
+    if (!item.usage_summary.runtime_count) return '生成客户端激活码'
+    if (!item.protection_enabled || item.protection_mode === 'off') return '配置防护规则'
+    return '测试防护效果'
+  }
+
+  function endpointNextStepHint(item: AiEndpointItem) {
+    if (!item.enabled) return '端点停用时不会参与路由。'
+    if (endpointRuntimeAttentionCount(item) > 0) return '已有客户端发起接入请求，需要签发激活码或批准绑定。'
+    if (!item.usage_summary.runtime_count) return '把短期激活码交给客户端脚本，长期凭据只落在客户端本地。'
+    if (!item.protection_enabled || item.protection_mode === 'off') return '为当前目标配置专属规则、Skill 扫描和统一研判策略。'
+    return '对当前目标发起攻击测试，验证安全事件和拦截效果。'
+  }
+
+  function endpointConnectionLabel(item: AiEndpointItem) {
+    if (item.usage_summary.runtime_online_count > 0) {
+      return `${item.usage_summary.runtime_online_count} 在线`
+    }
+    if (item.usage_summary.runtime_count > 0) {
+      return `${item.usage_summary.runtime_count} 已绑定`
+    }
+    return '未接客户端'
   }
 
   return {
@@ -795,6 +954,7 @@ export function useAiEndpointsPage() {
     setEndpointProtectionMode,
     deleteEndpoint,
     cleanupEndpointCandidates,
+    enableEndpointAiReview,
     runBatchUpdate,
     refreshList,
     copyText,
@@ -807,30 +967,40 @@ export function useAiEndpointsPage() {
     approveAndBindRuntime,
     rejectRuntime,
     revokeRuntime,
+    issueActivationCode,
     runtimeStatusLabel,
     runtimeStatusTone,
     tokenStatusLabel,
     tokenStatusTone,
     bindingStateLabel,
     bindingStateTone,
+    endpointRuntimeAttentionCount,
+    endpointRoleLabel,
+    endpointRoleTone,
+    endpointNextStepLabel,
+    endpointNextStepHint,
+    endpointConnectionLabel,
     selectEndpoint,
     isSelected,
     clearSelection,
     handleSelectionChange,
     protectionModeLabels: PROTECTION_MODE_LABELS,
     providerLabels: PROVIDER_LABELS,
+    manageEndpointDefense,
+    manageEndpointSkills,
   }
 }
 
-function blankEndpointForm(activeGroup: string, endpointCount: number): EndpointForm {
+export function blankEndpointForm(activeGroup: string, endpointCount: number): EndpointForm {
   return {
     endpoint_key: '',
     display_name: '',
     endpoint_group: activeGroup !== 'all' ? activeGroup : 'default',
+    target_type: 'openclaw_control',
     provider_type: 'openai_compatible',
-    base_url: '',
+    base_url: 'runtime://openclaw-control',
     api_key: '',
-    model_name: '',
+    model_name: 'openclaw-protected-target',
     enabled: true,
     is_default: endpointCount === 0,
     protection_enabled: true,
@@ -843,11 +1013,12 @@ function blankEndpointForm(activeGroup: string, endpointCount: number): Endpoint
   }
 }
 
-function fillDrawerForm(form: EndpointForm, item: AiEndpointItem) {
+export function fillDrawerForm(form: EndpointForm, item: AiEndpointItem) {
   Object.assign(form, {
     endpoint_key: item.endpoint_key,
     display_name: item.display_name,
     endpoint_group: normalizeGroup(item.endpoint_group),
+    target_type: item.target_type,
     provider_type: item.provider_type,
     base_url: item.base_url,
     api_key: '',
@@ -923,15 +1094,17 @@ function buildSecretPayload(form: EndpointForm) {
   }
 }
 
-function buildPayloadFromDrawer(form: EndpointForm, includeApiKey: boolean) {
+export function buildPayloadFromDrawer(form: EndpointForm, includeApiKey: boolean) {
   const endpointKey = normalizeEndpointKey(form.endpoint_key || form.display_name)
+  const targetType = form.target_type || 'openclaw_control'
+  const isOpenClawTarget = targetType === 'openclaw_control'
   if (!endpointKey) {
     throw new Error('端点标识不能为空')
   }
-  if (!form.base_url.trim()) {
+  if (!isOpenClawTarget && !form.base_url.trim()) {
     throw new Error('接入地址不能为空')
   }
-  if (!form.model_name.trim()) {
+  if (!isOpenClawTarget && !form.model_name.trim()) {
     throw new Error('模型名称不能为空')
   }
 
@@ -939,9 +1112,10 @@ function buildPayloadFromDrawer(form: EndpointForm, includeApiKey: boolean) {
     endpoint_key: endpointKey,
     display_name: form.display_name.trim() || endpointKey,
     endpoint_group: normalizeGroup(form.endpoint_group),
-    provider_type: form.provider_type,
-    base_url: form.base_url.trim(),
-    model_name: form.model_name.trim(),
+    target_type: targetType,
+    provider_type: isOpenClawTarget ? 'openai_compatible' : form.provider_type,
+    base_url: isOpenClawTarget ? 'runtime://openclaw-control' : form.base_url.trim(),
+    model_name: isOpenClawTarget ? 'openclaw-protected-target' : form.model_name.trim(),
     enabled: form.enabled,
     is_default: form.is_default,
     protection_enabled: form.protection_enabled,
@@ -951,7 +1125,7 @@ function buildPayloadFromDrawer(form: EndpointForm, includeApiKey: boolean) {
     ...buildSecretPayload(form),
   }
 
-  if (includeApiKey) {
+  if (includeApiKey && !isOpenClawTarget) {
     payload.api_key = form.api_key.trim()
   }
 

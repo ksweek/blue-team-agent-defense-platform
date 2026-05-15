@@ -157,17 +157,17 @@ const linkedConfigEntries = computed<LinkedConfigEntry[]>(() => {
   return [
     {
       key: 'pre-protect-ai',
-      title: '预保护 AI 接入',
+      title: '目标接入',
       subtitle: '默认路由 / 防护开关',
-      tag: 'AI 目标',
+      tag: '目标',
       tone: 'info',
       route: { name: 'ai-endpoints', query: { focus: 'route-protection' } },
     },
     {
       key: 'ai-review',
-      title: 'AI 研判接入',
-      subtitle: '规则直断 / AI 复核',
-      tag: 'AI 复核',
+      title: '研判端接入',
+      subtitle: '规则直断 / 研判复核',
+      tag: '复核',
       tone: 'warn',
       route: { name: 'defense-config', query: { focus: 'ai-review' } },
     },

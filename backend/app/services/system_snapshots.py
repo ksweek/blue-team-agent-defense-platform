@@ -353,7 +353,7 @@ def _apply_defense_payload(db: Session, payload: dict, *, apply_system_settings:
             db.delete(config)
 
     defense_policy_payload = payload.get("defense_policy") or {}
-    policy = db.query(DefensePolicy).get(1)
+    policy = db.get(DefensePolicy, 1)
     if policy is None:
         policy = DefensePolicy(id=1)
         db.add(policy)
@@ -627,6 +627,9 @@ def _clear_platform_tables(db: Session) -> None:
     ]:
         db.query(model).delete(synchronize_session=False)
     db.flush()
+    # Bulk deletes with synchronize_session=False leave stale identities in the session.
+    # Clear them before re-inserting objects with the same primary keys during restore.
+    db.expunge_all()
 
 
 def _serialize_user(item: User, *, include_secrets: bool) -> dict:

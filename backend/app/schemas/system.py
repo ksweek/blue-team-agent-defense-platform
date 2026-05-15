@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import Optional
 
 
 class SystemSettingFieldOption(BaseModel):
@@ -59,28 +58,3 @@ class SystemActionResult(BaseModel):
     created_at: str
     audit_log: AuditLogItem
 
-
-class ManagedArtifactItem(BaseModel):
-    kind: str
-    name: str
-    artifact_path: str
-    size_bytes: int
-    updated_at: str
-
-
-class ManagedArtifactList(BaseModel):
-    items: list[ManagedArtifactItem]
-    total: int
-
-
-class BackupRestoreRequest(BaseModel):
-    artifact_path: str
-
-
-class DefenseConfigImportRequest(BaseModel):
-    artifact_path: str
-    apply_system_settings: bool = True
-
-
-class RollbackRequest(BaseModel):
-    artifact_path: Optional[str] = None

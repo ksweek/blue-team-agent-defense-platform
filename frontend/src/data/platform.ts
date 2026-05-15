@@ -1,23 +1,11 @@
 export const navSections = [
   {
-    title: '总览',
+    title: '主入口',
     items: [
-      { label: '安全总览', to: '/', icon: 'dashboard' },
-    ],
-  },
-  {
-    title: '监测处置',
-    items: [
-      { label: '安全事件', to: '/security-events', icon: 'events' },
-      { label: '资产保护', to: '/asset-protection', icon: 'assets' },
-    ],
-  },
-  {
-    title: '防御治理',
-    items: [
+      { label: '系统安全总览', to: '/', icon: 'dashboard' },
       { label: 'AI 目标', to: '/ai-endpoints', icon: 'ai' },
-      { label: '防御配置', to: '/defense-config', icon: 'config' },
-      { label: '技能管理', to: '/skill-management', icon: 'skills' },
+      { label: '安全事件', to: '/security-events', icon: 'events' },
+      { label: '攻击实验室', to: '/attack-lab', icon: 'samples' },
       { label: '系统设置', to: '/system-settings', icon: 'settings' },
     ],
   },
@@ -28,7 +16,7 @@ export const attackCards = [
     title: '越权调用',
     level: '高风险',
     tone: 'danger',
-    detail: '检查模型是否会调用未授权工具、路径或技能。',
+    detail: '检查目标是否会调用未授权工具、路径或技能。',
   },
   {
     title: '提示注入',

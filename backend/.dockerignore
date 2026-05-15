@@ -6,10 +6,6 @@ data/*.sqlite
 data/*.sqlite3
 data/reports
 data/system_actions
-data/demo_skills/*
-!data/demo_skills/filesystem-reader
-!data/demo_skills/filesystem-reader/**
-!data/demo_skills/plugin-risk-audit
-!data/demo_skills/plugin-risk-audit/**
+data/demo_skills
 .venv
 venv

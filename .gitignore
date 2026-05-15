@@ -46,16 +46,23 @@ backend/data/*.db
 backend/data/*.db-*
 backend/data/*.sqlite
 backend/data/*.sqlite3
+backend/data/backups/*
+!backend/data/backups/.gitkeep
 backend/data/demo_skills/*
 !backend/data/demo_skills/filesystem-reader/
 !backend/data/demo_skills/filesystem-reader/**
 !backend/data/demo_skills/plugin-risk-audit/
 !backend/data/demo_skills/plugin-risk-audit/**
-backend/data/reports/
-backend/data/system_actions/
+backend/data/reports/*
+!backend/data/reports/.gitkeep
+backend/data/system_actions/*
+!backend/data/system_actions/.gitkeep
 tools/agent_gateway/generated/*
+!tools/agent_gateway/generated/.gitkeep
 !tools/agent_gateway/generated/README.md
+!release/openclaw-client-minimal/tools/agent_gateway/generated/README.md
 tools/**/__pycache__/
+release/github-publish/
 
 # Temporary files
 tmp/

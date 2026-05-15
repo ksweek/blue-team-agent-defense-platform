@@ -145,7 +145,7 @@ function secretValueTypeLabel(item: EndpointSecretDraft) {
                           <p class="card-subtitle">页面展示与默认路由使用</p>
                         </div>
                         <div class="settings-form-control">
-                          <input v-model="form.display_name" class="text-input settings-form-input" type="text" placeholder="生产大模型网关" />
+                          <input v-model="form.display_name" class="text-input settings-form-input" type="text" placeholder="生产网关" />
                         </div>
                       </div>
 

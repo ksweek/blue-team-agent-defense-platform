@@ -39,6 +39,7 @@ class SkillCreateRequest(BaseModel):
     provider: str = Field(default="manual", min_length=1, max_length=64)
     source_path: str = Field(min_length=1, max_length=255)
     trust_status: str = Field(default="pending", min_length=1, max_length=32)
+    ai_endpoint_id: Optional[int] = None
 
 
 class SkillImportDirectoryRequest(BaseModel):
@@ -47,6 +48,7 @@ class SkillImportDirectoryRequest(BaseModel):
     provider: str = Field(default="imported", min_length=1, max_length=64)
     trust_status: str = Field(default="pending", min_length=1, max_length=32)
     recursive: bool = True
+    ai_endpoint_id: Optional[int] = None
 
 
 class SkillImportPreviewItem(BaseModel):
@@ -163,3 +165,4 @@ class SkillImportPreviewResult(BaseModel):
 
 class SkillScanRequest(BaseModel):
     skill_ids: list[int]
+    ai_endpoint_id: Optional[int] = None

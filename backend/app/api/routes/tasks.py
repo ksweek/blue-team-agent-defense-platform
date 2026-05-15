@@ -122,7 +122,7 @@ def _serialize_report(item: Report | None) -> Optional[dict]:
 
 
 def _get_task_or_404(db: Session, task_id: int) -> AttackTask:
-    item = db.query(AttackTask).get(task_id)
+    item = db.get(AttackTask, task_id)
     if item is None:
         raise HTTPException(status_code=404, detail="attack task not found")
     return item
@@ -721,8 +721,8 @@ def run_attack_task(
 
     if item.status == "done" and item.latest_event_id and item.latest_report_id:
         logger.info("task run skipped | task_id=%s reason=already_completed user=%s", item.id, current_user.username)
-        event = db.query(SecurityEvent).get(item.latest_event_id)
-        report = db.query(Report).get(item.latest_report_id)
+        event = db.get(SecurityEvent, item.latest_event_id)
+        report = db.get(Report, item.latest_report_id)
         return success(
             {
                 "task": _serialize_task(item),

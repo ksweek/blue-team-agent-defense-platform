@@ -32,13 +32,6 @@ type TrendInsight = TrendItem & {
   metricDeltas: Record<TrendMetricKey, number | null>
 }
 
-const shortcutItems = [
-  { label: '安全事件', to: '/security-events', meta: '告警研判与处置', tone: 'danger' as Tone },
-  { label: '防御配置', to: '/defense-config', meta: '规则、模式与覆盖面', tone: 'safe' as Tone },
-  { label: '资产保护', to: '/asset-protection', meta: '路径、白名单与保护对象', tone: 'info' as Tone },
-  { label: 'AI 目标', to: '/ai-endpoints', meta: '模型接入与防护路由', tone: 'warn' as Tone },
-] as const
-
 const surfaceItems = [
   {
     title: '提示注入',
@@ -92,70 +85,11 @@ const overview = computed(() => ({
   activeTaskCount: data.value?.overview.active_task_count ?? 0,
 }))
 
-const blockRate = computed(() => {
-  if (!overview.value.attackCount) {
-    return 0
-  }
-  return Math.round((overview.value.blockedCount / overview.value.attackCount) * 100)
-})
-
 const heroTone = computed<Tone>(() => {
   if (overview.value.highRiskCount >= 6) return 'danger'
   if (overview.value.highRiskCount >= 2 || overview.value.activeTaskCount >= 3) return 'warn'
   return 'safe'
 })
-
-const heroSummary = computed(() => {
-  if (overview.value.highRiskCount >= 6) {
-    return '高危事件持续堆积，建议优先进入安全事件页处理。'
-  }
-  if (overview.value.activeTaskCount >= 3) {
-    return '当前有多条执行链路活跃，建议关注运行态与报告回传。'
-  }
-  if (overview.value.attackCount) {
-    return '整体处于可控区间，当前可重点关注覆盖面与趋势变化。'
-  }
-  return '当前没有新增攻击压力，可继续完善防线覆盖与联动策略。'
-})
-
-const heroMeta = computed(() => [
-  `拦截率 ${blockRate.value}%`,
-  `启用防线 ${overview.value.defenseCount}`,
-  `活跃任务 ${overview.value.activeTaskCount}`,
-])
-
-const statCards = computed(() => [
-  {
-    label: '总攻击任务',
-    value: overview.value.attackCount,
-    note: '累计进入执行链的任务',
-    tone: 'danger' as Tone,
-  },
-  {
-    label: '已拦截',
-    value: overview.value.blockedCount,
-    note: '命中规则或控制面后拦截',
-    tone: 'safe' as Tone,
-  },
-  {
-    label: '高危事件',
-    value: overview.value.highRiskCount,
-    note: '需要优先关注的告警',
-    tone: 'warn' as Tone,
-  },
-  {
-    label: '启用防线',
-    value: overview.value.defenseCount,
-    note: '当前已生效的防御项',
-    tone: 'info' as Tone,
-  },
-  {
-    label: '活跃任务',
-    value: overview.value.activeTaskCount,
-    note: '运行中或待研判执行链',
-    tone: 'warn' as Tone,
-  },
-])
 
 const sessionCards = computed(() => data.value?.sessions.items ?? [])
 const sessionPreview = computed(() => sessionCards.value.slice(0, 5))
@@ -444,87 +378,47 @@ function compactDayLabel(day: string) {
 <template>
   <section class="page-grid dashboard-page dashboard-revamp">
     <section class="dashboard-hero-shell">
-      <article :class="['dashboard-hero-card', `tone-${heroTone}`]">
+      <article :class="['dashboard-hero-card', 'dashboard-hero-card-compact', 'dashboard-hero-card-single', `tone-${heroTone}`]">
         <div class="dashboard-hero-copy">
           <div class="dashboard-hero-head">
-            <p class="eyebrow">Security Overview</p>
+            <div class="dashboard-hero-brand">
+              <p class="eyebrow">GuardianAgent</p>
+              <h1 class="dashboard-hero-title">面向 Function-Calling Agent 的多维AI防御与评估平台</h1>
+            </div>
             <StatusPill :label="heroTone === 'danger' ? '高压态势' : heroTone === 'warn' ? '波动中' : '运行平稳'" :tone="heroTone" />
           </div>
-          <h1>蓝队防御运行态总览</h1>
-          <p class="dashboard-hero-summary">{{ heroSummary }}</p>
-          <div class="dashboard-hero-meta">
-            <span v-for="item in heroMeta" :key="item">{{ item }}</span>
-          </div>
-          <div class="dashboard-hero-actions">
-            <RouterLink class="primary-button" to="/security-events">进入事件处置</RouterLink>
-            <RouterLink class="ghost-button" to="/defense-config">查看防御配置</RouterLink>
-          </div>
-        </div>
-
-        <div class="dashboard-hero-side">
-          <div class="dashboard-hero-side-panel">
-            <div class="dashboard-hero-side-head">
-              <strong>快捷入口</strong>
-              <span>{{ shortcutItems.length }} 个常用入口</span>
+          <p class="dashboard-hero-summary">
+            统一承接受保护 AI 的运行时流量，对提示注入、工具调用、MCP 能力和关键资产访问进行前置审查、记录与处置。
+          </p>
+          <div class="dashboard-hero-footer">
+            <div class="dashboard-hero-meta">
+              <span>OpenClaw 接入保护</span>
+              <span>Skill 扫描</span>
+              <span>MCP 策略约束</span>
+              <span>攻击验证闭环</span>
             </div>
-            <div class="dashboard-hero-shortcuts">
-              <RouterLink
-                v-for="item in shortcutItems"
-                :key="item.to"
-                :class="['dashboard-shortcut-row', `tone-${item.tone}`]"
-                :to="item.to"
-              >
-                <span :class="['dashboard-shortcut-strip', `tone-${item.tone}`]"></span>
-                <div class="dashboard-shortcut-copy">
-                  <strong>{{ item.label }}</strong>
-                  <span>{{ item.meta }}</span>
-                </div>
-                <span class="dashboard-shortcut-arrow" aria-hidden="true">›</span>
-              </RouterLink>
+            <div class="dashboard-hero-actions">
+              <RouterLink class="primary-button" to="/security-events">进入事件处置</RouterLink>
+              <RouterLink class="ghost-button" to="/ai-endpoints">目标治理</RouterLink>
             </div>
           </div>
         </div>
       </article>
 
-      <div class="dashboard-stat-strip">
-        <article
-          v-for="item in statCards"
-          :key="item.label"
-          :class="['dashboard-stat-card', `tone-${item.tone}`]"
-        >
-          <span>{{ item.label }}</span>
-          <strong>{{ item.value }}</strong>
-          <small>{{ item.note }}</small>
-        </article>
-      </div>
     </section>
 
     <section class="dashboard-main-grid">
-      <PageSection class="dashboard-panel-trend" eyebrow="趋势" title="近 7 日攻击趋势" tag="趋势变化" tone="warn">
-        <template #toolbar>
-          <div class="section-toolbar">
-            <div class="section-toolbar-copy">
-              <h4>趋势汇总</h4>
-              <div class="section-toolbar-meta">
-                <StatusPill :label="`攻击 ${totalTrendAttack}`" tone="danger" />
-                <StatusPill :label="`拦截 ${totalTrendBlock}`" tone="safe" />
-                <StatusPill :label="`放行 ${totalTrendFalsePositive}`" tone="warn" />
-              </div>
-            </div>
+      <PageSection class="dashboard-panel-trend" eyebrow="趋势" title="近 7 日攻击趋势" tone="warn">
+        <template #actions>
+          <div class="dashboard-trend-summary-line">
+            <span class="dashboard-trend-summary-item danger">攻击 {{ totalTrendAttack }}</span>
+            <span class="dashboard-trend-summary-item safe">拦截 {{ totalTrendBlock }}</span>
+            <span class="dashboard-trend-summary-item warn">放行 {{ totalTrendFalsePositive }}</span>
+            <span class="dashboard-trend-summary-item neutral">异常日 {{ trendAnomalyDays.length }}</span>
           </div>
         </template>
 
-        <div v-if="trendSeries.length" class="dashboard-trend-band">
-          <div class="dashboard-trend-band-head compact">
-            <div class="dashboard-trend-band-legend">
-              <span class="dashboard-trend-legend danger">攻击</span>
-              <span class="dashboard-trend-legend safe">拦截</span>
-              <span class="dashboard-trend-legend warn">放行</span>
-            </div>
-            <div v-if="trendAnomalyDays.length" class="dashboard-trend-strip-status">
-              <span class="dashboard-trend-strip-badge is-anomaly">异常日 {{ trendAnomalyDays.length }}</span>
-            </div>
-          </div>
+        <div v-if="trendSeries.length" class="dashboard-trend-band merged">
 
           <div class="dashboard-trend-strip-track">
             <div
@@ -599,20 +493,14 @@ function compactDayLabel(day: string) {
 
       <section class="dashboard-main-columns">
         <div class="dashboard-main-column dashboard-main-column-primary">
-          <PageSection class="dashboard-panel-surface" eyebrow="防线" title="攻击面覆盖" tag="覆盖态势" tone="danger">
-            <template #toolbar>
-              <div class="section-toolbar">
-                <div class="section-toolbar-copy">
-                  <h4>当前重点风险面</h4>
-                  <div class="section-toolbar-meta">
-                    <StatusPill :label="`${surfaceItems.length} 类`" tone="danger" />
-                    <span>聚焦最容易进入执行链的高风险面</span>
-                  </div>
-                </div>
-              </div>
-            </template>
-
-            <div class="dashboard-surface-grid">
+          <PageSection
+            class="dashboard-panel-surface"
+            eyebrow="防线"
+            title="当前重点风险面"
+            :tag="`${surfaceItems.length} 类`"
+            tone="danger"
+          >
+            <div class="dashboard-surface-grid compact">
               <article
                 v-for="item in surfaceItems"
                 :key="item.title"
@@ -622,7 +510,6 @@ function compactDayLabel(day: string) {
                   <h4>{{ item.title }}</h4>
                   <StatusPill :label="item.tag" :tone="item.tone" />
                 </div>
-                <p>{{ item.detail }}</p>
               </article>
             </div>
           </PageSection>

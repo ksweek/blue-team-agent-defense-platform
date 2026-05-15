@@ -2,7 +2,7 @@
   "sections": [
     {
       "section_name": "直接 Prompt Injection",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/01_direct_prompt_injection.jsonl",
       "entry_count": 3043,
       "sources": {
@@ -25,7 +25,7 @@
     },
     {
       "section_name": "未授权工具调用",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/03_unauthorized_tool_calls.jsonl",
       "entry_count": 2,
       "sources": {
@@ -40,7 +40,7 @@
     },
     {
       "section_name": "受保护路径、技能、插件测试",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/04_protected_paths_skills_plugins.jsonl",
       "entry_count": 41,
       "sources": {
@@ -87,7 +87,7 @@
     },
     {
       "section_name": "间接 Prompt Injection",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/05_indirect_prompt_injection.jsonl",
       "entry_count": 19,
       "sources": {
@@ -105,7 +105,7 @@
     },
     {
       "section_name": "多轮上下文污染",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/06_multi_turn_context_pollution.jsonl",
       "entry_count": 11,
       "sources": {
@@ -124,7 +124,7 @@
     },
     {
       "section_name": "输出泄露与脱敏测试",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/07_output_leakage_and_redaction.jsonl",
       "entry_count": 25,
       "sources": {
@@ -154,7 +154,7 @@
     },
     {
       "section_name": "审批绕过与社会工程测试",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/08_approval_bypass_social_engineering.jsonl",
       "entry_count": 52,
       "sources": {
@@ -171,7 +171,7 @@
     },
     {
       "section_name": "组合攻击链",
-      "handbook_file": "",
+      "handbook_file": "docs/testing/AI攻击测试样本集.md",
       "catalog_file": "curated/by_section/09_combined_attack_chain.jsonl",
       "entry_count": 1499,
       "sources": {

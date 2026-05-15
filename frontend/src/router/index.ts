@@ -4,6 +4,8 @@ import LoginPage from '../pages/LoginPage.vue'
 import SecurityDashboardPage from '../pages/SecurityDashboardPage.vue'
 import AttackTestingPage from '../pages/AttackTestingPage.vue'
 import AiEndpointsPage from '../pages/AiEndpointsPage.vue'
+import AiEndpointConfigPage from '../pages/AiEndpointConfigPage.vue'
+import AiEndpointMcpPolicyPage from '../pages/AiEndpointMcpPolicyPage.vue'
 import DefenseConfigPage from '../pages/DefenseConfigPage.vue'
 import SecurityEventsPage from '../pages/SecurityEventsPage.vue'
 import SecurityEventReportPage from '../pages/SecurityEventReportPage.vue'
@@ -25,15 +27,6 @@ const router = createRouter({
       }
     },
     {
-      path: '/attack-lab',
-      name: 'attack-testing',
-      component: AttackTestingPage,
-      meta: {
-        title: '攻击测试',
-        accessPath: '/attack-lab'
-      }
-    },
-    {
       path: '/',
       component: MainLayout,
       children: [
@@ -46,11 +39,47 @@ const router = createRouter({
           }
         },
         {
+          path: 'attack-lab',
+          name: 'attack-testing',
+          component: AttackTestingPage,
+          meta: {
+            title: '攻击测试',
+            accessPath: '/attack-lab'
+          }
+        },
+        {
           path: 'ai-endpoints',
           name: 'ai-endpoints',
           component: AiEndpointsPage,
           meta: {
-            title: 'AI 目标'
+            title: '目标治理'
+          }
+        },
+        {
+          path: 'ai-endpoints/new',
+          name: 'ai-endpoints-create',
+          component: AiEndpointConfigPage,
+          meta: {
+            title: '新增目标',
+            accessPath: '/ai-endpoints'
+          }
+        },
+        {
+          path: 'ai-endpoints/:endpointId',
+          name: 'ai-endpoints-detail',
+          component: AiEndpointConfigPage,
+          meta: {
+            title: '目标配置',
+            accessPath: '/ai-endpoints'
+          }
+        },
+        {
+          path: 'ai-endpoints/:endpointId/mcp',
+          name: 'ai-endpoints-mcp-policy',
+          component: AiEndpointMcpPolicyPage,
+          meta: {
+            title: 'MCP 绛栫暐',
+            accessPath: '/ai-endpoints'
           }
         },
         {

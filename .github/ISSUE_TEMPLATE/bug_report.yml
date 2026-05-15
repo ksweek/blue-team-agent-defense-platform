@@ -1,0 +1,54 @@
+name: 缺陷报告
+description: 提交一个可复现的问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 用 1 到 3 句话说明问题现象和影响范围
+      placeholder: 例如：攻击任务在无 AI Provider 时无法回退到 rule-only 模式
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请给出最小复现路径
+      placeholder: |
+        1. 执行 ...
+        2. 打开 ...
+        3. 点击 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 应该返回什么、跳转到哪里、或保存什么结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      placeholder: 实际报错、接口返回或页面表现
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      placeholder: |
+        - OS:
+        - Python:
+        - Node.js:
+        - 启动方式:
+        - 数据库:
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 请先移除密钥、令牌、敏感样本和真实业务数据

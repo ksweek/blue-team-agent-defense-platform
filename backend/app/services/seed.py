@@ -229,6 +229,9 @@ reports = [
 system_settings = [
     {"setting_key": "log_level", "setting_value": "INFO", "description": "系统日志级别"},
     {"setting_key": "notify_email", "setting_value": "enabled", "description": "是否开启邮件通知"},
+    {"setting_key": "review_ai_api_url", "setting_value": "", "description": "辅助研判接口"},
+    {"setting_key": "review_ai_api_key", "setting_value": "", "description": "辅助研判 API Key"},
+    {"setting_key": "review_ai_model", "setting_value": "gpt-4.1-mini", "description": "辅助研判模型"},
 ]
 
 audit_logs = [

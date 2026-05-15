@@ -27,8 +27,7 @@ defineProps<{
   <section class="status-rail">
     <article :class="['status-rail-main', `tone-${statusTone ?? 'info'}`]">
       <div class="status-rail-main-copy">
-        <span class="status-rail-title">{{ title }}</span>
-        <strong class="status-rail-summary">{{ summary }}</strong>
+        <strong class="status-rail-summary">{{ title }}</strong>
         <p v-if="meta" class="status-rail-meta">{{ meta }}</p>
       </div>
 

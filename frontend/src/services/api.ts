@@ -126,6 +126,7 @@ export type AiReviewPolicy = {
   title: string
   description: string
   mode: AiReviewMode
+  reviewer_ai_endpoint_id?: number | null
   field_meta: FormFieldMeta
   display_label?: string
   display_description?: string
@@ -621,9 +622,15 @@ export type AttackTaskExecutionResult = {
 
 export type AttackWorkerStatus = {
   status: string
+  worker_mode?: string
+  worker_threads?: number
   queued_tasks: number
-  active_task_id: number | null
+  active_task_id?: number | null
+  active_task_ids?: number[]
   scheduled_tasks: number
+  running_tasks?: number
+  paused_tasks?: number
+  dead_letter_tasks?: number
 }
 
 export type AiEndpointConfigSecretItem = {
@@ -682,6 +689,12 @@ export type AiEndpointItem = {
   endpoint_key: string
   display_name: string
   endpoint_group: string
+  target_type: 'openclaw_control' | 'standard_api' | string
+  target_label: string
+  connection_mode: string
+  runtime_type_hint: string
+  supports_direct_provider: boolean
+  supports_runtime_binding: boolean
   provider_type: 'openai_compatible' | 'anthropic' | 'azure_openai' | 'gemini' | 'ollama' | 'bedrock'
   base_url: string
   model_name: string
@@ -703,6 +716,7 @@ export type AiEndpointItem = {
     runtime_pending_count: number
     runtime_active_count: number
     runtime_online_count: number
+    openclaw_runtime_count: number
     task_count: number
     active_task_count: number
     last_runtime_seen_at: string
@@ -724,11 +738,121 @@ export type AiEndpointSummary = {
   cleanup_candidates?: number
 }
 
+export type McpTrustMode = 'trusted' | 'restricted' | 'blocked'
+export type McpApprovalMode = 'inherit' | 'required' | 'deny'
+export type McpRiskLevel = 'low' | 'medium' | 'high'
+
+export type McpPolicyTemplateItem = {
+  key: string
+  label: string
+  description: string
+  recommended: boolean
+  server_count: number
+  capability_count: number
+}
+
+export type McpScopeOption = {
+  value: string
+  label: string
+  risk_level: McpRiskLevel
+}
+
+export type McpServerSuggestion = {
+  server_name: string
+  server_label: string
+  suggested_scopes: string[]
+  notes: string
+}
+
+export type McpCapabilitySuggestion = {
+  server_name: string
+  capability_name: string
+  capability_label: string
+  risk_level: McpRiskLevel
+  approval_mode: McpApprovalMode
+  suggested_scopes: string[]
+  notes: string
+}
+
+export type McpServerPolicyItem = {
+  id?: number
+  server_name: string
+  server_label: string
+  enabled: boolean
+  trust_mode: McpTrustMode
+  require_ticket: boolean
+  require_approval: boolean
+  allowed_scopes: string[]
+  template_key?: string | null
+  managed_by?: string | null
+  notes?: string | null
+  meta?: Record<string, unknown>
+  created_at?: string
+  updated_at?: string
+}
+
+export type McpCapabilityPolicyItem = {
+  id?: number
+  server_name: string
+  capability_name: string
+  capability_label: string
+  enabled: boolean
+  risk_level: McpRiskLevel
+  approval_mode: McpApprovalMode
+  allowed_scopes: string[]
+  template_key?: string | null
+  managed_by?: string | null
+  notes?: string | null
+  meta?: Record<string, unknown>
+  created_at?: string
+  updated_at?: string
+}
+
+export type AiEndpointMcpPolicyProfile = {
+  endpoint: {
+    id: number
+    endpoint_key: string
+    display_name: string
+    provider_type: string
+    target_type?: string
+    protection_enabled: boolean
+    protection_mode: string
+  }
+  policy_summary: {
+    endpoint_server_count: number
+    endpoint_capability_count: number
+    global_server_count: number
+    global_capability_count: number
+    effective_server_count?: number
+    effective_capability_count?: number
+    inherits_global_defaults: boolean
+    uses_builtin_defaults?: boolean
+    effective_mode: 'strict_allowlist' | 'compatibility_mode' | string
+    matched_template_key?: string | null
+    builtin_template_key?: string | null
+    compatibility_note: string
+  }
+  templates: McpPolicyTemplateItem[]
+  servers: McpServerPolicyItem[]
+  capabilities: McpCapabilityPolicyItem[]
+  catalog: {
+    trust_modes: McpTrustMode[]
+    approval_modes: McpApprovalMode[]
+    risk_levels: McpRiskLevel[]
+    scope_options: McpScopeOption[]
+    server_suggestions: McpServerSuggestion[]
+    capability_suggestions: McpCapabilitySuggestion[]
+  }
+}
+
 export type RuntimeBindingEndpoint = {
   id?: number | null
   endpoint_key: string
   display_name: string
   endpoint_group?: string
+  target_type?: string
+  target_label?: string
+  connection_mode?: string
   provider_type: string
   base_url: string
   model_name: string
@@ -742,6 +866,8 @@ export type RuntimeEnrollmentTokenItem = {
   token_key: string
   token_label: string
   token_hint: string
+  delivery_mode: string
+  bootstrap_code_hint: string
   runtime_type: string
   status: string
   usage_limit: number
@@ -771,6 +897,9 @@ export type ManagedRuntimeItem = {
   metadata: Record<string, unknown>
   ai_endpoint: RuntimeBindingEndpoint | null
   approved_at: string
+  activation_issued_at: string
+  activation_expires_at: string
+  activation_code_hint: string
   rejected_at: string
   revoked_at: string
   last_seen_at: string
@@ -788,6 +917,8 @@ export type RuntimeRegistrySummary = {
   tokens_active: number
   runtimes_total: number
   runtimes_pending: number
+  runtimes_activation_requested: number
+  runtimes_activation_issued: number
   runtimes_approved: number
   runtimes_active: number
   tokens_unbound: number
@@ -1095,29 +1226,34 @@ export const api = {
       items: Array<{ session_id: string; session_name: string; status: string; risk_level: string }>
       total: number
     }>('/dashboard/sessions'),
-  defenseConfigs: () =>
+  defenseConfigs: (params?: { ai_endpoint_id?: number }) =>
     request<{
       items: DefenseConfigItem[]
       total: number
-    }>('/defense-configs'),
-  defensePolicy: () => request<DefensePolicyProfile>('/defense-configs/profile'),
+    }>(`/defense-configs${buildQuery(params ?? {})}`),
+  defensePolicy: (ai_endpoint_id?: number) =>
+    request<DefensePolicyProfile>(`/defense-configs/profile${buildQuery(ai_endpoint_id ? { ai_endpoint_id } : {})}`),
   updateDefenseConfig: (
     defenseId: number,
     payload: {
       enabled: boolean
       mode: string
       config_json: Record<string, unknown>
-    }
+    },
+    ai_endpoint_id?: number
   ) =>
-    request<DefenseConfigItem>(`/defense-configs/${defenseId}`, {
+    request<DefenseConfigItem>(`/defense-configs/${defenseId}${buildQuery(ai_endpoint_id ? { ai_endpoint_id } : {})}`, {
       method: 'PUT',
       body: JSON.stringify(payload)
     }),
-  batchUpdateDefenseConfigs: (payload: { ids: number[]; enabled?: boolean; mode?: string }) =>
+  batchUpdateDefenseConfigs: (
+    payload: { ids: number[]; enabled?: boolean; mode?: string },
+    ai_endpoint_id?: number
+  ) =>
     request<{
       items: DefenseConfigItem[]
       total: number
-    }>('/defense-configs/batch-update', {
+    }>(`/defense-configs/batch-update${buildQuery(ai_endpoint_id ? { ai_endpoint_id } : {})}`, {
       method: 'POST',
       body: JSON.stringify(payload)
     }),
@@ -1148,12 +1284,13 @@ export const api = {
       title: string
       description: string
       mode: AiReviewMode
+      reviewer_ai_endpoint_id?: number | null
     }
     protected_paths: string[]
     protected_skills: string[]
     protected_plugins: string[]
-  }) =>
-    request<DefensePolicyProfile>('/defense-configs/profile', {
+  }, ai_endpoint_id?: number) =>
+    request<DefensePolicyProfile>(`/defense-configs/profile${buildQuery(ai_endpoint_id ? { ai_endpoint_id } : {})}`, {
       method: 'PUT',
       body: JSON.stringify(payload)
     }),
@@ -1235,6 +1372,7 @@ export const api = {
     page_size?: number
     scan_task_page?: number
     scan_task_page_size?: number
+    ai_endpoint_id?: number
   }) =>
     request<{
       items: SkillItem[]
@@ -1251,6 +1389,7 @@ export const api = {
     provider: string
     source_path: string
     trust_status: string
+    ai_endpoint_id?: number
   }) =>
     request<SkillItem>('/skills', {
       method: 'POST',
@@ -1262,6 +1401,7 @@ export const api = {
     provider: string
     trust_status: string
     recursive: boolean
+    ai_endpoint_id?: number
   }) =>
     request<SkillImportResponse>('/skills/import-directory', {
       method: 'POST',
@@ -1273,6 +1413,7 @@ export const api = {
     provider: string
     trust_status: string
     recursive: boolean
+    ai_endpoint_id?: number
   }) =>
     request<SkillImportPreviewResponse>('/skills/import-directory/preview', {
       method: 'POST',
@@ -1288,10 +1429,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ source_path })
     }),
-  scanSkills: (skill_ids: number[]) =>
+  scanSkills: (skill_ids: number[], ai_endpoint_id?: number) =>
     request<AttackTaskItem>('/skills/scan', {
       method: 'POST',
-      body: JSON.stringify({ skill_ids })
+      body: JSON.stringify({ skill_ids, ai_endpoint_id })
     }),
   aiEndpoints: () =>
     request<{
@@ -1305,10 +1446,12 @@ export const api = {
     ai_endpoint_id?: number
     usage_limit: number
     expires_at?: string | null
+    delivery_mode?: string
   }) =>
     request<{
       token: RuntimeEnrollmentTokenItem
       enrollment_token: string
+      activation_code: string
       onboarding_steps: string[]
     }>('/runtime-registry/tokens', {
       method: 'POST',
@@ -1369,11 +1512,63 @@ export const api = {
     }>(`/runtime-registry/runtimes/${runtimeId}/revoke`, {
       method: 'POST'
     }),
+  issueRuntimeActivationCode: (
+    runtimeId: number,
+    payload?: {
+      display_name?: string
+      ai_endpoint_id?: number | null
+      expires_in_minutes?: number
+    }
+  ) =>
+    request<{
+      runtime: ManagedRuntimeItem
+      status_summary: string
+      activation_code: string
+      activation_expires_at: string
+    }>(`/runtime-registry/runtimes/${runtimeId}/activation-code`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {})
+    }),
   aiEndpoint: (endpointId: number) => request<AiEndpointItem>(`/ai-endpoints/${endpointId}`),
+  aiEndpointMcpPolicy: (endpointId: number) =>
+    request<AiEndpointMcpPolicyProfile>(`/ai-endpoints/${endpointId}/mcp-policy`),
+  updateAiEndpointMcpPolicy: (
+    endpointId: number,
+    payload: {
+      servers: Array<{
+        server_name: string
+        server_label: string
+        enabled: boolean
+        trust_mode: McpTrustMode
+        require_ticket: boolean
+        require_approval: boolean
+        allowed_scopes: string[]
+      }>
+      capabilities: Array<{
+        server_name: string
+        capability_name: string
+        capability_label: string
+        enabled: boolean
+        risk_level: McpRiskLevel
+        approval_mode: McpApprovalMode
+        allowed_scopes: string[]
+      }>
+    }
+  ) =>
+    request<AiEndpointMcpPolicyProfile>(`/ai-endpoints/${endpointId}/mcp-policy`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    }),
+  applyAiEndpointMcpPolicyTemplate: (endpointId: number, template_key: string) =>
+    request<AiEndpointMcpPolicyProfile>(`/ai-endpoints/${endpointId}/mcp-policy/apply-template`, {
+      method: 'POST',
+      body: JSON.stringify({ template_key })
+    }),
   createAiEndpoint: (payload: {
     endpoint_key: string
     display_name: string
     endpoint_group?: string
+    target_type?: 'openclaw_control' | 'standard_api'
     provider_type: 'openai_compatible' | 'anthropic' | 'azure_openai' | 'gemini' | 'ollama' | 'bedrock'
     base_url: string
     api_key?: string
@@ -1398,6 +1593,7 @@ export const api = {
       endpoint_key: string
       display_name: string
       endpoint_group: string
+      target_type: 'openclaw_control' | 'standard_api'
       provider_type: 'openai_compatible' | 'anthropic' | 'azure_openai' | 'gemini' | 'ollama' | 'bedrock'
       base_url: string
       api_key: string
@@ -1462,6 +1658,9 @@ export const api = {
       provider: string
       model: string
       output_text: string
+      raw_output_text?: string
+      duration_ms?: number
+      request_verified?: boolean
       usage: Record<string, unknown>
     }>(`/ai-endpoints/${endpointId}/test`, {
       method: 'POST'

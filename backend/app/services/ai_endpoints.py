@@ -21,7 +21,21 @@ SUPPORTED_PROVIDER_TYPES = {
     "ollama",
     "bedrock",
 }
+TARGET_TYPE_STANDARD_API = "standard_api"
+TARGET_TYPE_OPENCLAW_CONTROL = "openclaw_control"
+SUPPORTED_TARGET_TYPES = {
+    TARGET_TYPE_STANDARD_API,
+    TARGET_TYPE_OPENCLAW_CONTROL,
+}
 SUPPORTED_PROTECTION_MODES = {"enforce", "observe", "off"}
+PLATFORM_TARGET_CONFIG_KEY = "_platform_target"
+OPENCLAW_RUNTIME_TYPE_HINT = "openclaw_control_bridge"
+OPENCLAW_PLACEHOLDER_BASE_URL = "runtime://openclaw-control"
+OPENCLAW_PLACEHOLDER_MODEL_NAME = "openclaw-protected-target"
+TARGET_TYPE_LABELS = {
+    TARGET_TYPE_STANDARD_API: "Standard API",
+    TARGET_TYPE_OPENCLAW_CONTROL: "OpenClaw Protected Target",
+}
 NORMALIZED_SENSITIVE_CONFIG_KEYS = {
     "apikey",
     "accesstoken",
@@ -47,36 +61,6 @@ SENSITIVE_CONFIG_KEY_RE = re.compile(
     r"(?:^|[_\-.])(?:api(?:[_\-.]?key)?|access(?:[_\-.]?token)?|refresh(?:[_\-.]?token)?|auth(?:orization)?|bearer(?:[_\-.]?token)?|session(?:[_\-.]?token)?|jwt|password|passwd|pwd|secret|client(?:[_\-.]?secret)?|smtp(?:[_\-.]?password)?|private(?:[_\-.]?key)?|cookie|set[_\-.]?cookie|handoff(?:[_\-.]?token)?|x[_\-.]?api[_\-.]?key)(?:$|[_\-.])",
     re.IGNORECASE,
 )
-PROVIDER_TEMPLATES = {
-    "deepseek": {
-        "provider_type": "openai_compatible",
-        "display_name": "DeepSeek Compatible",
-        "endpoint_group": "compatible",
-        "base_url_hint": "https://api.deepseek.com/v1",
-        "config_json": {"headers": {}, "extra_body": {}},
-    },
-    "moonshot": {
-        "provider_type": "openai_compatible",
-        "display_name": "Moonshot Compatible",
-        "endpoint_group": "compatible",
-        "base_url_hint": "https://api.moonshot.cn/v1",
-        "config_json": {"headers": {}, "extra_body": {}},
-    },
-    "vllm": {
-        "provider_type": "openai_compatible",
-        "display_name": "vLLM OpenAI Compatible",
-        "endpoint_group": "self-hosted",
-        "base_url_hint": "http://127.0.0.1:8000/v1",
-        "config_json": {"headers": {}, "extra_body": {}},
-    },
-    "oneapi": {
-        "provider_type": "openai_compatible",
-        "display_name": "One API Compatible",
-        "endpoint_group": "gateway",
-        "base_url_hint": "http://127.0.0.1:3000/v1",
-        "config_json": {"headers": {}, "extra_body": {}},
-    },
-}
 GATEWAY_BASE_PATH = "/api/gateway/v1"
 GATEWAY_WS_BASE_PATH = "/api/gateway/v1/ws"
 
@@ -99,6 +83,13 @@ def normalize_provider_type(value: str) -> str:
     return provider_type
 
 
+def normalize_target_type(value: str) -> str:
+    target_type = value.strip().lower()
+    if target_type not in SUPPORTED_TARGET_TYPES:
+        raise ValueError(f"Unsupported target_type: {value}")
+    return target_type
+
+
 def normalize_protection_mode(value: str) -> str:
     protection_mode = value.strip().lower()
     if protection_mode not in SUPPORTED_PROTECTION_MODES:
@@ -113,6 +104,97 @@ def mask_api_key(value: str) -> str:
     if len(secret) <= 8:
         return f"{secret[:2]}***"
     return f"{secret[:4]}***{secret[-4:]}"
+
+
+def _platform_target_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    raw = {}
+    if isinstance(config, dict):
+        raw = dict(config.get(PLATFORM_TARGET_CONFIG_KEY) or {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def infer_endpoint_target_type(
+    *,
+    explicit_target_type: str | None = None,
+    config: dict[str, Any] | None = None,
+    provider_type: str | None = None,
+    base_url: str | None = None,
+    model_name: str | None = None,
+    api_key: str | None = None,
+    usage_summary: dict[str, Any] | None = None,
+) -> str:
+    explicit = str(explicit_target_type or "").strip()
+    if explicit:
+        return normalize_target_type(explicit)
+
+    config_target_type = str(_platform_target_config(config).get("target_type") or "").strip()
+    if config_target_type:
+        return normalize_target_type(config_target_type)
+
+    if usage_summary and int(usage_summary.get("openclaw_runtime_count") or 0) > 0:
+        return TARGET_TYPE_OPENCLAW_CONTROL
+
+    normalized_base_url = str(base_url or "").strip().lower()
+    normalized_model_name = str(model_name or "").strip().lower()
+    has_direct_provider_fields = any(
+        [
+            str(provider_type or "").strip(),
+            str(base_url or "").strip(),
+            str(model_name or "").strip(),
+            str(api_key or "").strip(),
+        ]
+    )
+    if normalized_base_url == OPENCLAW_PLACEHOLDER_BASE_URL or normalized_model_name == OPENCLAW_PLACEHOLDER_MODEL_NAME:
+        return TARGET_TYPE_OPENCLAW_CONTROL
+    if has_direct_provider_fields:
+        return TARGET_TYPE_STANDARD_API
+    return TARGET_TYPE_OPENCLAW_CONTROL
+
+
+def build_target_profile_config(target_type: str) -> dict[str, Any]:
+    normalized = normalize_target_type(target_type)
+    if normalized == TARGET_TYPE_OPENCLAW_CONTROL:
+        return {
+            "target_type": normalized,
+            "target_label": TARGET_TYPE_LABELS[normalized],
+            "connection_mode": "runtime_bridge_only",
+            "runtime_type_hint": OPENCLAW_RUNTIME_TYPE_HINT,
+            "supports_direct_provider": False,
+            "supports_runtime_binding": True,
+        }
+    return {
+        "target_type": normalized,
+        "target_label": TARGET_TYPE_LABELS[normalized],
+        "connection_mode": "direct_provider",
+        "runtime_type_hint": "",
+        "supports_direct_provider": True,
+        "supports_runtime_binding": False,
+    }
+
+
+def merge_target_profile_config(config: dict[str, Any], target_type: str) -> dict[str, Any]:
+    merged = dict(config or {})
+    merged[PLATFORM_TARGET_CONFIG_KEY] = build_target_profile_config(target_type)
+    return merged
+
+
+def get_ai_endpoint_target_type(item: AiEndpoint, *, usage_summary: dict[str, Any] | None = None) -> str:
+    return infer_endpoint_target_type(
+        config=item.config,
+        provider_type=item.provider_type,
+        base_url=item.base_url,
+        model_name=item.model_name,
+        api_key=item.api_key,
+        usage_summary=usage_summary,
+    )
+
+
+def build_ai_endpoint_target_profile(item: AiEndpoint, *, usage_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    target_type = get_ai_endpoint_target_type(item, usage_summary=usage_summary)
+    profile = build_target_profile_config(target_type)
+    profile["target_type"] = target_type
+    profile["target_label"] = TARGET_TYPE_LABELS[target_type]
+    return profile
 
 
 def is_sensitive_config_key(value: str | None) -> bool:
@@ -384,8 +466,11 @@ def build_endpoint_config_payload(
 
 def build_ai_endpoint_config_view(config: dict[str, Any]) -> dict[str, Any]:
     secret_items = _collect_sensitive_config_items(config)
+    public_config = _strip_sensitive_config(config)
+    if isinstance(public_config, dict):
+        public_config.pop(PLATFORM_TARGET_CONFIG_KEY, None)
     return {
-        "config_public_json": _strip_sensitive_config(config),
+        "config_public_json": public_config,
         "config_secret_items": secret_items,
         "config_secret_count": len(secret_items),
         "config_secret_summary": "未发现隐藏敏感配置" if not secret_items else f"已隐藏 {len(secret_items)} 项敏感配置",
@@ -599,6 +684,7 @@ def build_ai_endpoint_usage_summaries(db: Session) -> dict[int, dict[str, Any]]:
                 "runtime_pending_count": 0,
                 "runtime_active_count": 0,
                 "runtime_online_count": 0,
+                "openclaw_runtime_count": 0,
                 "task_count": 0,
                 "active_task_count": 0,
                 "last_runtime_seen_at": "",
@@ -615,6 +701,8 @@ def build_ai_endpoint_usage_summaries(db: Session) -> dict[int, dict[str, Any]]:
             continue
         bucket = ensure(runtime.ai_endpoint_id)
         bucket["runtime_count"] += 1
+        if str(runtime.runtime_type or "").strip() == OPENCLAW_RUNTIME_TYPE_HINT:
+            bucket["openclaw_runtime_count"] += 1
         if runtime.status in {"pending", "approved"}:
             bucket["runtime_pending_count"] += 1
         if runtime.status == "active":
@@ -664,17 +752,25 @@ def serialize_ai_endpoint(item: AiEndpoint, *, usage_summary: dict[str, Any] | N
         "runtime_pending_count": 0,
         "runtime_active_count": 0,
         "runtime_online_count": 0,
+        "openclaw_runtime_count": 0,
         "task_count": 0,
         "active_task_count": 0,
         "last_runtime_seen_at": "",
         **(usage_summary or {}),
     }
+    target_profile = build_ai_endpoint_target_profile(item, usage_summary=usage)
     is_demo = is_demo_ai_endpoint(item)
     return {
         "id": item.id,
         "endpoint_key": item.endpoint_key,
         "display_name": item.display_name,
         "endpoint_group": normalize_endpoint_group(item.endpoint_group),
+        "target_type": target_profile["target_type"],
+        "target_label": target_profile["target_label"],
+        "connection_mode": target_profile["connection_mode"],
+        "runtime_type_hint": target_profile["runtime_type_hint"],
+        "supports_direct_provider": bool(target_profile["supports_direct_provider"]),
+        "supports_runtime_binding": bool(target_profile["supports_runtime_binding"]),
         "provider_type": item.provider_type,
         "base_url": item.base_url,
         "model_name": item.model_name,
@@ -696,11 +792,15 @@ def serialize_ai_endpoint(item: AiEndpoint, *, usage_summary: dict[str, Any] | N
 
 
 def build_ai_endpoint_snapshot(item: AiEndpoint) -> dict[str, Any]:
+    target_profile = build_ai_endpoint_target_profile(item)
     return {
         "id": item.id,
         "endpoint_key": item.endpoint_key,
         "display_name": item.display_name,
         "endpoint_group": normalize_endpoint_group(item.endpoint_group),
+        "target_type": target_profile["target_type"],
+        "target_label": target_profile["target_label"],
+        "connection_mode": target_profile["connection_mode"],
         "provider_type": item.provider_type,
         "base_url": item.base_url,
         "model_name": item.model_name,
@@ -716,6 +816,9 @@ def build_env_ai_endpoint_snapshot() -> dict[str, Any]:
         "endpoint_key": "env-default",
         "display_name": "Environment Default",
         "endpoint_group": "environment",
+        "target_type": TARGET_TYPE_STANDARD_API,
+        "target_label": TARGET_TYPE_LABELS[TARGET_TYPE_STANDARD_API],
+        "connection_mode": "direct_provider",
         "provider_type": settings.ai_provider,
         "base_url": settings.ai_base_url,
         "model_name": settings.ai_model,
@@ -726,6 +829,11 @@ def build_env_ai_endpoint_snapshot() -> dict[str, Any]:
 
 
 def provider_endpoint_from_ai_endpoint(item: AiEndpoint) -> ProviderEndpoint:
+    target_type = get_ai_endpoint_target_type(item)
+    if target_type != TARGET_TYPE_STANDARD_API:
+        raise ProviderConfigurationError(
+            f"AI target {item.display_name} uses {TARGET_TYPE_LABELS[target_type]} and does not support direct provider requests."
+        )
     return ProviderEndpoint(
         provider=item.provider_type,
         base_url=item.base_url,
@@ -820,7 +928,7 @@ def attach_ai_endpoint_selection(
 
     endpoint: AiEndpoint | None = None
     if resolved_id is not None:
-        endpoint = db.query(AiEndpoint).get(resolved_id)
+        endpoint = db.get(AiEndpoint, resolved_id)
         if endpoint is None:
             raise ValueError(f"AI endpoint #{resolved_id} not found")
         if not endpoint.enabled:
@@ -857,7 +965,7 @@ def resolve_task_ai_endpoint(db: Session, task: AttackTask) -> ProviderEndpoint 
         endpoint_id = int(raw_value.strip())
 
     if endpoint_id is not None:
-        endpoint = db.query(AiEndpoint).get(endpoint_id)
+        endpoint = db.get(AiEndpoint, endpoint_id)
         if endpoint is None:
             raise ProviderConfigurationError(f"AI endpoint #{endpoint_id} referenced by task #{task.id} was not found.")
         if not endpoint.enabled:

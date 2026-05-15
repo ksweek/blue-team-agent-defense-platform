@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageSection from '../components/PageSection.vue'
 import StatusPill from '../components/StatusPill.vue'
 import {
@@ -25,6 +26,8 @@ type SyncState = 'idle' | 'saving' | 'saved' | 'error'
 type ProtectionMode = AiEndpointItem['protection_mode']
 
 const PAGE_SIZE = 10
+const route = useRoute()
+const router = useRouter()
 
 const loading = ref(true)
 const error = ref<string | null>(null)
@@ -84,6 +87,11 @@ const usingDefaultRoute = computed(() => !form.aiEndpointId && Boolean(defaultAi
 const canOperateCurrent = computed(() => Boolean(focusedSampleId.value && form.targetAgent.trim() && resolvedAiEndpoint.value))
 const canOperateBatch = computed(() => Boolean(selectedSampleIds.value.length && form.targetAgent.trim() && resolvedAiEndpoint.value))
 const canScheduleBatch = computed(() => canOperateBatch.value && Boolean(form.scheduleAt))
+const routeEndpointId = computed(() => {
+  const rawValue = Array.isArray(route.query.ai_endpoint_id) ? route.query.ai_endpoint_id[0] : route.query.ai_endpoint_id
+  const parsed = Number(rawValue)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+})
 
 const endpointGroupTabs = computed(() => {
   const counters = new Map<string, { label: string; count: number }>()
@@ -175,7 +183,7 @@ const statusItems = computed(
         value: resolvedAiEndpoint.value ? (usingDefaultRoute.value ? '默认' : '指定') : '未配置',
         meta: resolvedAiEndpoint.value
           ? `${resolvedAiEndpoint.value.display_name} / ${endpointGroupLabel(resolvedAiEndpoint.value.endpoint_group)}`
-          : '先配置 AI 目标',
+          : '先配置目标',
         tone: resolvedAiEndpoint.value ? ('safe' as Tone) : ('danger' as Tone),
       },
       {
@@ -262,6 +270,42 @@ watch(
     stopPolling()
   },
   { immediate: true }
+)
+
+watch(
+  () => route.query.ai_endpoint_id,
+  () => {
+    if (!aiEndpoints.value.length) {
+      return
+    }
+    applyEndpointFromRouteQuery()
+  }
+)
+
+watch(
+  () => form.aiEndpointId,
+  () => {
+    ensureEndpointRouteState()
+    void syncEndpointRouteQuery()
+  }
+)
+
+watch(
+  () => resolvedAiEndpoint.value?.id,
+  async (nextEndpointId, previousEndpointId) => {
+    if (loading.value || nextEndpointId === previousEndpointId) {
+      return
+    }
+    selectedTaskIds.value = []
+    focusedTaskId.value = null
+    focusedTask.value = null
+    focusedEvent.value = null
+    focusedReport.value = null
+    await refreshTaskWorkspace()
+    if (taskItems.value.length) {
+      await focusTask(taskItems.value[0].id)
+    }
+  }
 )
 
 onMounted(() => {
@@ -425,7 +469,7 @@ function selectedEndpointLabel() {
   if (selectedAiEndpoint.value) {
     return normalizeEndpointDisplayName(selectedAiEndpoint.value.display_name || selectedAiEndpoint.value.endpoint_key)
   }
-  return '未配置 AI'
+  return '未配置目标'
 }
 
 function ensureEndpointRouteState() {
@@ -442,6 +486,50 @@ function ensureEndpointRouteState() {
   if (activeEndpointGroup.value !== 'all' && !endpointGroupTabs.value.some((item) => item.key === activeEndpointGroup.value)) {
     activeEndpointGroup.value = 'all'
   }
+}
+
+function selectedEndpointIdForTask() {
+  return resolvedAiEndpoint.value?.id
+}
+
+function applyEndpointFromRouteQuery() {
+  const endpointId = routeEndpointId.value
+  if (!endpointId) {
+    form.aiEndpointId = ''
+    return
+  }
+
+  const endpoint = aiEndpoints.value.find((item) => item.id === endpointId)
+  if (!endpoint) {
+    syncState.value = 'error'
+    syncMessage.value = 'URL 指定的目标不存在或未启用，请重新选择攻击目标'
+    return
+  }
+
+  form.aiEndpointId = String(endpoint.id)
+  activeEndpointGroup.value = normalizeEndpointGroup(endpoint.endpoint_group)
+}
+
+async function syncEndpointRouteQuery() {
+  const query = { ...route.query }
+  const endpointId = selectedAiEndpoint.value?.id
+
+  if (endpointId) {
+    if (routeEndpointId.value === endpointId) {
+      return
+    }
+    query.ai_endpoint_id = String(endpointId)
+  } else {
+    if (!routeEndpointId.value) {
+      return
+    }
+    delete query.ai_endpoint_id
+  }
+
+  await router.replace({
+    path: route.path,
+    query,
+  })
 }
 
 function selectExplicitEndpoint(endpointId: number) {
@@ -520,10 +608,11 @@ async function initializePage() {
      sectionItems.value = sectionsPayload.items
      packItems.value = packsPayload.items
      aiEndpoints.value = endpointsPayload.items.filter((item) => item.enabled)
+     applyEndpointFromRouteQuery()
      ensureEndpointRouteState()
      if (!aiEndpoints.value.length) {
        syncState.value = 'error'
-       syncMessage.value = '先到 AI 目标页配置可用端点'
+       syncMessage.value = '先到目标治理页配置可用端点'
      }
 
     await Promise.all([loadSamples(), refreshTaskWorkspace()])
@@ -562,8 +651,9 @@ async function loadSamples() {
 }
 
 async function refreshTaskWorkspace() {
+  const aiEndpointId = selectedEndpointIdForTask()
   const [tasksPayload, worker] = await Promise.all([
-    api.attackTasks({ page_size: 24, source_type: 'dataset_sample' }),
+    api.attackTasks({ page_size: 24, source_type: 'dataset_sample', ai_endpoint_id: aiEndpointId }),
     api.attackWorkerStatus(),
   ])
 
@@ -572,6 +662,12 @@ async function refreshTaskWorkspace() {
 
   const visibleTaskIds = new Set(taskItems.value.map((item) => item.id))
   selectedTaskIds.value = selectedTaskIds.value.filter((item) => visibleTaskIds.has(item))
+  if (focusedTaskId.value && !visibleTaskIds.has(focusedTaskId.value)) {
+    focusedTaskId.value = null
+    focusedTask.value = null
+    focusedEvent.value = null
+    focusedReport.value = null
+  }
 }
 
 async function focusSample(sampleId: string) {
@@ -662,7 +758,7 @@ async function refreshFocusedTask(taskId?: number) {
 }
 
 async function createCurrentTaskInternal() {
-  const aiEndpointId = form.aiEndpointId ? Number(form.aiEndpointId) : undefined
+  const aiEndpointId = selectedEndpointIdForTask()
   if (!focusedSampleId.value || !form.targetAgent.trim() || !resolvedAiEndpoint.value) {
     throw new Error('先选择样本、目标路由并填写目标实例')
   }
@@ -723,7 +819,7 @@ async function runCurrentSample() {
 }
 
 async function createBatchTasks(autoRun: boolean, scheduleAt?: string) {
-  const aiEndpointId = form.aiEndpointId ? Number(form.aiEndpointId) : undefined
+  const aiEndpointId = selectedEndpointIdForTask()
   if (!selectedSampleIds.value.length || !form.targetAgent.trim() || !resolvedAiEndpoint.value) {
     throw new Error('先勾选样本、确认目标路由并填写目标实例')
   }
@@ -1059,15 +1155,14 @@ function nextPage() {
                 </div>
               </div>
               <div class="section-toolbar-actions">
-                <RouterLink class="ghost-button" to="/ai-endpoints">管理 AI 目标</RouterLink>
-                <RouterLink class="ghost-button" to="/defense-config">查看防御配置</RouterLink>
+                <RouterLink class="ghost-button" to="/ai-endpoints">目标治理</RouterLink>
                 <RouterLink class="ghost-button" to="/security-events">查看安全事件</RouterLink>
               </div>
             </div>
           </template>
 
           <div v-if="!aiEndpoints.length" class="empty-state">
-            <p>还没有可用 AI 端点。先到“AI 目标”页新增并启用一个端点。</p>
+            <p>还没有可用端点。先到“目标治理”页新增并启用一个端点。</p>
             <RouterLink class="ghost-button" to="/ai-endpoints">前往配置</RouterLink>
           </div>
 
@@ -1085,9 +1180,23 @@ function nextPage() {
               </button>
             </div>
 
+            <article v-if="resolvedAiEndpoint" class="attack-target-focus-card">
+              <div class="attack-target-focus-copy">
+                <p class="panel-kicker">当前攻击目标</p>
+                <h4>{{ selectedEndpointLabel() }}</h4>
+                <p>点击下方卡片切换测试对象。创建、执行、批量攻击和任务记录都会绑定到当前目标。</p>
+              </div>
+              <div class="attack-target-focus-meta">
+                <StatusPill :label="usingDefaultRoute ? '默认目标' : '指定目标'" :tone="usingDefaultRoute ? 'info' : 'safe'" />
+                <StatusPill :label="endpointProtectionLabel(resolvedAiEndpoint)" :tone="endpointProtectionTone(resolvedAiEndpoint)" />
+                <span>{{ resolvedAiEndpoint.model_name }}</span>
+                <span>Runtime 在线 {{ resolvedAiEndpoint.usage_summary.runtime_online_count }}</span>
+              </div>
+            </article>
+
             <div class="route-target-grid">
               <button
-                :class="['asset-list-button', 'endpoint-list-card', 'route-target-card', { active: usingDefaultRoute }]"
+                :class="['asset-list-button', 'endpoint-list-card', 'route-target-card', { active: resolvedAiEndpoint?.id === defaultAiEndpoint?.id }]"
                 type="button"
                 @click="useDefaultRoute"
               >
@@ -1104,7 +1213,7 @@ function nextPage() {
                 <div class="route-card-copy">
                   <h4>{{ defaultAiEndpoint?.display_name || '未配置默认路由' }}</h4>
                   <p class="card-subtitle">
-                    {{ defaultAiEndpoint ? `${endpointGroupLabel(defaultAiEndpoint.endpoint_group)} / ${defaultAiEndpoint.model_name}` : '需先在 AI 目标页设置默认端点' }}
+                    {{ defaultAiEndpoint ? `${endpointGroupLabel(defaultAiEndpoint.endpoint_group)} / ${defaultAiEndpoint.model_name}` : '需先在目标治理页设置默认端点' }}
                   </p>
                 </div>
               </button>
@@ -1261,7 +1370,7 @@ function nextPage() {
                     :tone="guardDecisionTone(focusedGuardTrace.decision)"
                   />
                   <StatusPill
-                    :label="focusedGuardTrace.ai_review_invoked ? '已触发 AI 复核' : '未触发 AI 复核'"
+                    :label="focusedGuardTrace.ai_review_invoked ? '已触发研判' : '未触发研判'"
                     :tone="focusedGuardTrace.ai_review_invoked ? 'warn' : 'info'"
                   />
                 </div>

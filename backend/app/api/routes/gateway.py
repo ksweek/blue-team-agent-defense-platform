@@ -18,10 +18,11 @@ from sqlalchemy.orm import Session
 from ...core.config import settings
 from ...core.response import failure, success
 from ...db.session import get_db
-from ...models import AiEndpoint, AttackTask, DefenseConfig, ManagedRuntime, Report, RuntimeEnrollmentToken, SecurityEvent, User
+from ...models import AiEndpoint, AttackTask, DefenseConfig, ManagedRuntime, Report, RuntimeDispatchCommand, RuntimeEnrollmentToken, SecurityEvent, User
 from ...schemas.gateway import (
     GatewayAgentRunRequest,
     GatewayChatCompletionsRequest,
+    GatewayRuntimeCommandCompleteRequest,
     GatewayResponsesRequest,
     GatewayRuntimeAuthorizeRequest,
     GatewayRuntimeCompleteRequest,
@@ -51,6 +52,13 @@ from ...services.model_provider import (
     invoke_chat_completion,
     provider_supports_streaming,
 )
+from ...services.mcp_security import (
+    action_requires_mcp_ticket,
+    issue_mcp_execution_ticket,
+    resolve_task_ai_endpoint_id,
+    serialize_mcp_execution_ticket,
+    validate_mcp_execution_ticket,
+)
 from ...services.policy_enforcer import (
     append_task_authorization_snapshot,
     authorize_runtime_action,
@@ -71,6 +79,7 @@ from ...services.runtime_registry import (
     verify_runtime_poll_secret,
     verify_runtime_secret,
 )
+from ...services.runtime_dispatch import claim_next_runtime_command, complete_runtime_command, serialize_runtime_dispatch_command
 
 router = APIRouter()
 logger = logging.getLogger("app.gateway")
@@ -82,11 +91,11 @@ QUERY_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 JSON_SECRET_VALUE_RE = re.compile(
-    r"(\"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|password|secret|handoff_token|x-api-key)\"?\s*:\s*\")([^\"]+)(\")",
+    r"(\"?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|qq_email_auth_code|password|secret|handoff_token|x-api-key)\"?\s*:\s*\")([^\"]+)(\")",
     re.IGNORECASE,
 )
 TEXT_SECRET_VALUE_RE = re.compile(
-    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|password|secret|handoff_token|x-api-key)\b\s*[:=]\s*)([^\s\"',}]+)",
+    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|smtp_password|qq_email_auth_code|password|secret|handoff_token|x-api-key)\b\s*[:=]\s*)([^\s\"',}]+)",
     re.IGNORECASE,
 )
 COOKIE_RE = re.compile(r"(\b(?:cookie|set-cookie)\b\s*[:=]\s*)([^\r\n]+)", re.IGNORECASE)
@@ -201,6 +210,61 @@ def _serialize_report(item: Optional[Report]) -> Optional[dict[str, Any]]:
     }
 
 
+def _serialize_runtime_command(item: RuntimeDispatchCommand | None) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    return serialize_runtime_dispatch_command(item)
+
+
+def _build_runtime_completion_action(task: AttackTask, payload: GatewayRuntimeCompleteRequest) -> dict[str, Any]:
+    metadata = dict(payload.metadata or {})
+    params = dict(task.params)
+    return {
+        "action_type": str(metadata.get("action_type") or "").strip(),
+        "runtime_name": str(payload.runtime_name or task.runtime_name or "").strip(),
+        "runtime_task_ref": str(payload.runtime_task_ref or task.runtime_task_ref or "").strip(),
+        "call_id": str(payload.call_id or metadata.get("call_id") or metadata.get("ws_call_id") or "").strip(),
+        "tool_call_id": str(
+            payload.tool_call_id
+            or metadata.get("tool_call_id")
+            or metadata.get("openclaw_tool_call_id")
+            or params.get("tool_call_id")
+            or ""
+        ).strip(),
+        "operation_type": str(
+            payload.operation_type
+            or metadata.get("operation_type")
+            or metadata.get("openclaw_operation_type")
+            or params.get("operation_type")
+            or ""
+        ).strip().lower(),
+        "event_name": str(
+            payload.event_name
+            or metadata.get("event_name")
+            or metadata.get("openclaw_event_name")
+            or params.get("event_name")
+            or ""
+        ).strip(),
+        "mcp_ticket_key": str(payload.mcp_ticket_key or metadata.get("mcp_ticket_key") or "").strip(),
+        "request_args_hash": str(
+            payload.request_args_hash
+            or metadata.get("request_args_hash")
+            or params.get("request_args_hash")
+            or ""
+        ).strip(),
+        "session_id": str(metadata.get("session_id") or params.get("session_id") or "").strip(),
+        "approval_id": str(metadata.get("approval_id") or params.get("approval_id") or "").strip(),
+        "mcp_server": str(metadata.get("mcp_server") or params.get("mcp_server") or "").strip(),
+        "capability_name": str(metadata.get("capability_name") or params.get("capability_name") or "").strip(),
+        "source_plugin": str(metadata.get("source_plugin") or params.get("source_plugin") or "").strip(),
+        "target_plugin": str(metadata.get("target_plugin") or params.get("target_plugin") or "").strip(),
+        "handoff_token": str(metadata.get("handoff_token") or params.get("handoff_token") or "").strip(),
+        "requested_scopes": list(metadata.get("requested_scopes") or params.get("requested_scopes") or []),
+        "metadata": metadata,
+        "consume_mcp_ticket": bool(payload.consume_mcp_ticket or metadata.get("consume_mcp_ticket")),
+    }
+
+
 def _mask_middle(value: str, visible_start: int = 4, visible_end: int = 2) -> str:
     text = value.strip()
     if not text:
@@ -296,7 +360,7 @@ def _service_error_response(status_code: int, message: str, data: Any = None) ->
 
 
 def _get_task_or_404(db: Session, task_id: int) -> AttackTask:
-    item = db.query(AttackTask).get(task_id)
+    item = db.get(AttackTask, task_id)
     if item is None:
         raise HTTPException(status_code=404, detail="attack task not found")
     return item
@@ -309,7 +373,7 @@ def _resolve_task_creator_id(db: Session, principal: GatewayPrincipal) -> int:
         if principal.runtime.approved_by:
             return principal.runtime.approved_by
         if principal.runtime.enrollment_token_id:
-            token = db.query(RuntimeEnrollmentToken).get(principal.runtime.enrollment_token_id)
+            token = db.get(RuntimeEnrollmentToken, principal.runtime.enrollment_token_id)
             if token is not None and token.issued_by:
                 return token.issued_by
     fallback_user = db.query(User).order_by(User.id.asc()).first()
@@ -356,7 +420,7 @@ def _resolve_gateway_principal(
 
     payload = decode_access_token(credentials.credentials)
     user_id = int(payload.get("uid", 0))
-    user = db.query(User).get(user_id)
+    user = db.get(User, user_id)
     if user is None or user.status != "active":
         raise HTTPException(status_code=401, detail="gateway user is inactive or missing")
 
@@ -2727,7 +2791,7 @@ def gateway_runtime_register(
     )
     bound_endpoint_id = token.ai_endpoint_id if token.ai_endpoint_id is not None else payload.ai_endpoint_id
     if bound_endpoint_id is not None:
-        endpoint = db.query(AiEndpoint).get(bound_endpoint_id)
+        endpoint = db.get(AiEndpoint, bound_endpoint_id)
         if endpoint is None:
             raise HTTPException(status_code=404, detail="ai endpoint not found")
 
@@ -2838,6 +2902,67 @@ def gateway_runtime_session(
     )
 
 
+@router.get("/runtime/commands/next")
+def gateway_runtime_next_command(
+    db: Session = Depends(get_db),
+    principal: GatewayPrincipal = Depends(gateway_principal_dependency),
+):
+    if principal.runtime is None:
+        raise HTTPException(status_code=403, detail="runtime authentication is required")
+
+    now = utc_now()
+    principal.runtime.last_seen_at = now
+    item = claim_next_runtime_command(db, principal.runtime.id)
+    db.commit()
+    if item is not None:
+        db.refresh(item)
+    db.refresh(principal.runtime)
+    return success(
+        {
+            "runtime": serialize_managed_runtime(db, principal.runtime),
+            "command": _serialize_runtime_command(item),
+        },
+        message="runtime command ready" if item is not None else "no runtime command",
+    )
+
+
+@router.post("/runtime/commands/{command_id}/complete")
+def gateway_runtime_complete_command(
+    command_id: int,
+    payload: GatewayRuntimeCommandCompleteRequest,
+    db: Session = Depends(get_db),
+    principal: GatewayPrincipal = Depends(gateway_principal_dependency),
+):
+    if principal.runtime is None:
+        raise HTTPException(status_code=403, detail="runtime authentication is required")
+
+    item = db.get(RuntimeDispatchCommand, command_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="runtime command not found")
+    if item.runtime_id != principal.runtime.id:
+        raise HTTPException(status_code=403, detail="runtime command does not belong to this runtime")
+
+    now = utc_now()
+    principal.runtime.last_seen_at = now
+    if item.status not in {"completed", "failed", "cancelled"}:
+        complete_runtime_command(
+            db,
+            item=item,
+            status=payload.status,
+            summary=payload.summary,
+            response_text=payload.response_text,
+            response_json=payload.response_json,
+            error=payload.error,
+            metadata=payload.metadata,
+        )
+        db.commit()
+        db.refresh(item)
+    else:
+        db.commit()
+    db.refresh(principal.runtime)
+    return success({"command": _serialize_runtime_command(item)}, message="runtime command completed")
+
+
 @router.post("/runtime/tasks")
 def gateway_runtime_create_task(
     payload: AttackTaskCreate,
@@ -2916,11 +3041,23 @@ def gateway_runtime_authorize(
     decision = authorize_runtime_action(db, item, action)
     append_task_authorization_snapshot(item, action=action, decision=decision)
     serialized_decision = serialize_authorization_decision(decision)
+    issued_ticket = None
+    if decision.decision != "deny" and action_requires_mcp_ticket(action):
+        issued_ticket = issue_mcp_execution_ticket(
+            db,
+            task=item,
+            runtime=principal.runtime,
+            action=action,
+        )
+        if issued_ticket is not None:
+            serialized_decision["mcp_execution_ticket"] = serialize_mcp_execution_ticket(issued_ticket)
 
     params = dict(item.params)
     runtime_state = dict(params.get("runtime") or {})
     runtime_state["authorization_at"] = format_beijing(now)
     runtime_state["authorization_result"] = serialized_decision
+    if issued_ticket is not None:
+        runtime_state["mcp_execution_ticket"] = serialize_mcp_execution_ticket(issued_ticket)
     params["runtime"] = runtime_state
     item.set_params(params)
 
@@ -2977,8 +3114,8 @@ def gateway_runtime_complete(
 ):
     item = _get_task_or_404(db, payload.task_id)
     if item.status in {"done", "failed"} and item.latest_report_id:
-        event = db.query(SecurityEvent).get(item.latest_event_id) if item.latest_event_id else None
-        report = db.query(Report).get(item.latest_report_id) if item.latest_report_id else None
+        event = db.get(SecurityEvent, item.latest_event_id) if item.latest_event_id else None
+        report = db.get(Report, item.latest_report_id) if item.latest_report_id else None
         return success(_runtime_success_payload(item, event, report), message="task already completed")
 
     now = utc_now()
@@ -2993,6 +3130,26 @@ def gateway_runtime_complete(
 
     params = dict(item.params)
     runtime_state = dict(params.get("runtime") or {})
+    completion_action = _build_runtime_completion_action(item, payload)
+    mcp_ticket_validation = None
+    if completion_action["mcp_ticket_key"] or completion_action["consume_mcp_ticket"]:
+        mcp_ticket_validation = validate_mcp_execution_ticket(
+            db,
+            ticket_key=completion_action["mcp_ticket_key"],
+            task_id=item.id,
+            runtime_id=principal.runtime.id if principal.runtime is not None else None,
+            ai_endpoint_id=resolve_task_ai_endpoint_id(item),
+            action=completion_action,
+            consume=completion_action["consume_mcp_ticket"],
+        )
+        runtime_state["mcp_ticket_audit"] = {
+            "allowed": mcp_ticket_validation.allowed,
+            "code": mcp_ticket_validation.code,
+            "reason": mcp_ticket_validation.reason,
+            "ticket_key": completion_action["mcp_ticket_key"],
+            "consume": completion_action["consume_mcp_ticket"],
+            "completed_at": format_beijing(now),
+        }
     runtime_state.update(
         {
             "status": payload.status,
@@ -3023,13 +3180,33 @@ def gateway_runtime_complete(
     ]
     raw_input = event_payload.raw_input if event_payload is not None else json.dumps(item.params, ensure_ascii=False)
     result = event_payload.result if event_payload is not None and event_payload.result else payload.summary
+    task_status = "failed" if payload.status == "failed" else "done"
+    final_summary = payload.summary
+
+    if mcp_ticket_validation is not None and not mcp_ticket_validation.allowed:
+        task_status = "failed"
+        event_status = EVENT_STATUS_INTERCEPTED
+        event_level = "high"
+        final_summary = mcp_ticket_validation.reason
+        event_detail = f"{event_detail}; {mcp_ticket_validation.reason}" if event_detail else mcp_ticket_validation.reason
+        result = result or mcp_ticket_validation.reason
+        hit_rules = _dedupe_strings([*hit_rules, "mcp-session-bind"])
+        operation_logs = [
+            *operation_logs,
+            {
+                "operator": item.runtime_name or "external-runtime",
+                "action": "mcp_ticket_validation_failed",
+                "time": format_beijing(now),
+                "detail": mcp_ticket_validation.reason,
+            },
+        ]
 
     task, event, report = record_task_outcome(
         db,
         item,
-        summary=payload.summary,
+        summary=final_summary,
         raw_response=raw_response,
-        task_status="failed" if payload.status == "failed" else "done",
+        task_status=task_status,
         event_type=event_type,
         event_level=event_level,
         event_status=event_status,

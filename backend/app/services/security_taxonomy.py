@@ -425,6 +425,101 @@ SIGNAL_META: dict[str, dict[str, str]] = {
         "detail": "攻击链路涉及插件、Skill、MCP 或工具调用侧风险。",
         "tone": "danger",
     },
+    "context_persistence_or_trigger_setup": {
+        "label": "上下文持久化植入",
+        "detail": "检测到试图把隐藏规则、审批继承或延迟触发条件写入后续轮次上下文。",
+        "tone": "warn",
+    },
+    "context_attack_chain_detected": {
+        "label": "多轮触发链路",
+        "detail": "检测到上下文植入、延迟触发、跨轮激活或记忆污染组成的攻击链。",
+        "tone": "danger",
+    },
+    "cross_turn_instruction_override": {
+        "label": "跨轮指令覆盖",
+        "detail": "检测到后续轮次利用前文埋点去覆盖既有规则或系统策略。",
+        "tone": "danger",
+    },
+    "memory_persistence_setup": {
+        "label": "记忆植入准备",
+        "detail": "当前轮次包含要求长期记忆、隐藏规则或持久化执行条件的文本。",
+        "tone": "warn",
+    },
+    "delayed_trigger_setup": {
+        "label": "延迟触发准备",
+        "detail": "当前轮次试图设置后续触发词、代码词或激活条件。",
+        "tone": "warn",
+    },
+    "delayed_trigger_activation": {
+        "label": "延迟触发激活",
+        "detail": "后续轮次出现激活存量规则或执行隐藏动作的触发文本。",
+        "tone": "danger",
+    },
+    "delayed_trigger_codeword_match": {
+        "label": "触发词命中",
+        "detail": "后续轮次出现与前文代码词或触发词匹配的上下文内容。",
+        "tone": "danger",
+    },
+    "delayed_trigger_execution": {
+        "label": "跨轮执行接续",
+        "detail": "后续轮次在前文植入条件后继续请求执行越权或覆盖型动作。",
+        "tone": "danger",
+    },
+    "cross_turn_override": {
+        "label": "多轮覆盖语义",
+        "detail": "多轮上下文中出现利用前文状态覆盖当前规则的攻击语义。",
+        "tone": "warn",
+    },
+    "output_channel_attack_surface": {
+        "label": "输出通道攻击面",
+        "detail": "请求或样本已落在输出回显、泄露或编码外传阶段，需要对响应进行脱敏和外传审查。",
+        "tone": "warn",
+    },
+    "sensitive_output_review": {
+        "label": "敏感输出复核",
+        "detail": "当前链路需要额外检查是否存在 secrets、PII、训练数据回放或绕过滤器的输出片段。",
+        "tone": "warn",
+    },
+    "authorization_stage_attack_surface": {
+        "label": "审批链路攻击面",
+        "detail": "请求已进入审批、授权或人工确认边界，需要校验是否存在社工、伪授权或越权执行诱导。",
+        "tone": "warn",
+    },
+    "tool_use_attack_surface": {
+        "label": "工具调用攻击面",
+        "detail": "请求已进入工具执行阶段，需要校验工具范围、参数权限和是否触发额外审批。",
+        "tone": "danger",
+    },
+    "output_exfiltration_family": {
+        "label": "输出外传家族",
+        "detail": "样本家族表现为结果拼接、图像/URI 外传、密文编码外传或其它输出通道泄露路径。",
+        "tone": "danger",
+    },
+    "output_coercion_family": {
+        "label": "输出胁迫家族",
+        "detail": "样本家族试图通过格式约束、逐字复述或输出控制来绕过防护并取回敏感内容。",
+        "tone": "danger",
+    },
+    "training_or_model_replay_surface": {
+        "label": "训练数据 / 模型回放面",
+        "detail": "样本家族涉及训练数据复现、模型抽取、模型反演或成员推断等高风险输出请求。",
+        "tone": "danger",
+    },
+    "tool_execution_family": {
+        "label": "工具执行家族",
+        "detail": "样本家族直接针对函数调用、工具执行、工作区写入或权限绕过链路。",
+        "tone": "danger",
+    },
+    "tool_execution_workspace_surface": {
+        "label": "工作区 / 能力面",
+        "detail": "攻击链已落在 Skill、插件、MCP 或工作区能力边界，需要额外校验执行上下文。",
+        "tone": "warn",
+    },
+    "approval_or_goal_escalation_surface": {
+        "label": "目标升级 / 审批诱导面",
+        "detail": "样本家族试图把危险目标、越权动作或组合攻击伪装成应被批准的正常请求。",
+        "tone": "danger",
+    },
 }
 
 

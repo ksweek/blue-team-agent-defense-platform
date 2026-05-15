@@ -58,6 +58,7 @@ class AiReviewPolicy(BaseModel):
     title: str
     description: str
     mode: str
+    reviewer_ai_endpoint_id: Optional[int] = None
 
 
 class AiReviewPolicyItem(AiReviewPolicy):

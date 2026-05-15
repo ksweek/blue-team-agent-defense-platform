@@ -17,6 +17,7 @@ RUNTIME_KEY_PREFIX = "rtm"
 RUNTIME_SECRET_PREFIX = "rts"
 REGISTRATION_PREFIX = "reg"
 POLL_SECRET_PREFIX = "clm"
+ACTIVATION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 @dataclass
@@ -34,6 +35,12 @@ class RuntimeCredentialBundle:
     runtime_secret_hint: str
 
 
+@dataclass
+class ActivationCodeBundle:
+    activation_code: str
+    activation_code_hint: str
+
+
 def _generate_public_id(prefix: str, length: int = 12) -> str:
     alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
     return f"{prefix}_{''.join(secrets.choice(alphabet) for _ in range(length))}"
@@ -42,6 +49,11 @@ def _generate_public_id(prefix: str, length: int = 12) -> str:
 def _generate_secret(prefix: str, length: int = 32) -> str:
     alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
     return f"{prefix}_{''.join(secrets.choice(alphabet) for _ in range(length))}"
+
+
+def _generate_activation_code(length: int = 8) -> str:
+    value = "".join(secrets.choice(ACTIVATION_CODE_ALPHABET) for _ in range(length))
+    return f"{value[:4]}-{value[4:]}"
 
 
 def _mask_secret(secret: str, *, visible_start: int = 6, visible_end: int = 4) -> str:
@@ -93,10 +105,22 @@ def create_runtime_credentials() -> RuntimeCredentialBundle:
     )
 
 
+def create_activation_code() -> ActivationCodeBundle:
+    activation_code = _generate_activation_code()
+    return ActivationCodeBundle(
+        activation_code=activation_code,
+        activation_code_hint=_mask_secret(activation_code, visible_start=2, visible_end=2),
+    )
+
+
+def create_bootstrap_activation_code() -> ActivationCodeBundle:
+    return create_activation_code()
+
+
 def _runtime_endpoint_snapshot(db: Session, endpoint_id: int | None) -> dict[str, Any] | None:
     if endpoint_id is None:
         return None
-    item = db.query(AiEndpoint).get(endpoint_id)
+    item = db.get(AiEndpoint, endpoint_id)
     if item is None:
         return None
     return build_ai_endpoint_snapshot(item)
@@ -111,6 +135,8 @@ def serialize_runtime_enrollment_token(db: Session, item: RuntimeEnrollmentToken
         "token_key": item.token_key,
         "token_label": item.token_label,
         "token_hint": f"{item.token_key}.{item.secret_hint}",
+        "delivery_mode": item.delivery_mode,
+        "bootstrap_code_hint": item.bootstrap_code_hint,
         "runtime_type": item.runtime_type,
         "status": effective_status,
         "usage_limit": item.usage_limit,
@@ -144,6 +170,9 @@ def serialize_managed_runtime(db: Session, item: ManagedRuntime) -> dict[str, An
         "metadata": item.meta,
         "ai_endpoint": _runtime_endpoint_snapshot(db, item.ai_endpoint_id),
         "approved_at": format_beijing(item.approved_at) if item.approved_at else "",
+        "activation_issued_at": format_beijing(item.activation_issued_at) if item.activation_issued_at else "",
+        "activation_expires_at": format_beijing(item.activation_expires_at) if item.activation_expires_at else "",
+        "activation_code_hint": item.activation_code_hint,
         "rejected_at": format_beijing(item.rejected_at) if item.rejected_at else "",
         "revoked_at": format_beijing(item.revoked_at) if item.revoked_at else "",
         "last_seen_at": format_beijing(item.last_seen_at) if item.last_seen_at else "",
@@ -195,6 +224,45 @@ def verify_runtime_poll_secret(runtime: ManagedRuntime, secret: str) -> bool:
     return verify_password(secret, runtime.poll_secret_hash)
 
 
+def verify_runtime_activation_code(runtime: ManagedRuntime, activation_code: str | None) -> bool:
+    if not runtime.activation_code_hash or not activation_code:
+        return False
+    return verify_password(str(activation_code).strip(), runtime.activation_code_hash)
+
+
+def verify_token_bootstrap_code(token: RuntimeEnrollmentToken, activation_code: str | None) -> bool:
+    if not token.bootstrap_code_hash or not activation_code:
+        return False
+    return verify_password(str(activation_code).strip(), token.bootstrap_code_hash)
+
+
+def resolve_bootstrap_activation_token(db: Session, activation_code: str) -> RuntimeEnrollmentToken:
+    normalized = str(activation_code or "").strip()
+    if not normalized:
+        raise ValueError("激活码不能为空")
+
+    candidate_items = (
+        db.query(RuntimeEnrollmentToken)
+        .filter(
+            RuntimeEnrollmentToken.status == "active",
+            RuntimeEnrollmentToken.delivery_mode == "activation_code",
+        )
+        .all()
+    )
+    now = utc_now()
+    for item in candidate_items:
+        if item.expires_at is not None and item.expires_at <= now:
+            item.status = "expired"
+            continue
+        if item.used_count >= item.usage_limit:
+            continue
+        if verify_token_bootstrap_code(item, normalized):
+            db.commit()
+            return item
+    db.commit()
+    raise ValueError("激活码无效、已过期或已达到使用上限")
+
+
 def find_runtime_by_runtime_key(db: Session, runtime_key: str | None) -> ManagedRuntime | None:
     key = str(runtime_key or "").strip()
     if not key:
@@ -230,7 +298,7 @@ def runtime_registry_endpoint_usage(db: Session) -> dict[int, dict[str, Any]]:
             continue
         bucket = ensure(runtime.ai_endpoint_id)
         bucket["runtime_count"] += 1
-        if runtime.status in {"pending", "approved"}:
+        if runtime.status in {"pending", "approved", "activation_requested", "activation_issued"}:
             bucket["runtime_pending_count"] += 1
         if runtime.status == "active":
             bucket["runtime_active_count"] += 1
@@ -279,7 +347,13 @@ def runtime_registry_payload(db: Session) -> dict[str, Any]:
         "tokens_total": len(token_items),
         "tokens_active": sum(1 for item in token_items if item.status == "active"),
         "runtimes_total": len(runtime_items),
-        "runtimes_pending": sum(1 for item in runtime_items if item.status == "pending"),
+        "runtimes_pending": sum(
+            1
+            for item in runtime_items
+            if item.status in {"pending", "approved", "activation_requested", "activation_issued"}
+        ),
+        "runtimes_activation_requested": sum(1 for item in runtime_items if item.status == "activation_requested"),
+        "runtimes_activation_issued": sum(1 for item in runtime_items if item.status == "activation_issued"),
         "runtimes_approved": sum(1 for item in runtime_items if item.status == "approved"),
         "runtimes_active": sum(1 for item in runtime_items if item.status == "active"),
         "tokens_unbound": len(unbound_tokens),
@@ -306,6 +380,27 @@ def build_runtime_onboarding_steps(*, server_base: str, enrollment_token: str) -
     ]
 
 
+def build_runtime_bootstrap_steps(*, server_base: str, activation_code: str) -> list[str]:
+    base = server_base.rstrip("/")
+    return [
+        "1. 在客户端脚本里填写平台地址、上游地址和上游鉴权信息。",
+        f"2. 输入短期接入激活码: {activation_code}",
+        f"3. 客户端向 {base}/api/runtime-registry/client-activate 发起一次性换取。",
+        "4. 平台立即下发长期 Runtime 凭据，并把该客户端绑定到管理员预先指定的 AI 目标。",
+        "5. 后续所有连接直接复用本地长期凭据，不再重复填写激活码。",
+    ]
+
+
+def build_runtime_activation_steps(*, server_base: str, registration_id: str) -> list[str]:
+    base = server_base.rstrip("/")
+    return [
+        "1. 客户端先填写管理主机地址与平台账号密码，并做一次测试连接。",
+        f"2. 客户端提交激活申请后，管理员在管理端为 Runtime {registration_id} 生成短期激活码。",
+        "3. 客户端输入激活码，只兑换一次长期 Runtime 凭据。",
+        f"4. 凭据落地后，后续直接复用本地配置连接 {base}/gateway/v1/*，无需再次手工录入。",
+    ]
+
+
 def build_runtime_auth_headers(runtime_key: str, runtime_secret: str) -> list[dict[str, str]]:
     return [
         {"name": "X-Runtime-Key", "value": runtime_key},
@@ -314,6 +409,10 @@ def build_runtime_auth_headers(runtime_key: str, runtime_secret: str) -> list[di
 
 
 def runtime_status_summary(item: ManagedRuntime) -> str:
+    if item.status == "activation_requested":
+        return "等待管理员签发激活码"
+    if item.status == "activation_issued":
+        return "激活码已签发，等待客户端兑换"
     if item.status == "pending":
         return "等待审批"
     if item.status == "approved":

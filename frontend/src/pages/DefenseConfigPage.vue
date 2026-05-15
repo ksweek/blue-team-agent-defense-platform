@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import AiScopeBanner from '../components/AiScopeBanner.vue'
 import PageSection from '../components/PageSection.vue'
 import StatusPill from '../components/StatusPill.vue'
 import { useAsyncData } from '../composables/useAsyncData'
@@ -106,13 +108,14 @@ const FALLBACK_ADVANCED_RULE: DefensePolicyRule = {
 
 const FALLBACK_AI_REVIEW_POLICY: AiReviewPolicy = {
   key: 'protected-agent-ai-review',
-  title: 'AI 复核策略',
-  description: '明确攻击由规则直接阻断，其余流量按模式决定是否进入 AI 复核。',
+  title: '研判复核策略',
+  description: '明确攻击由规则直接阻断，其余流量按模式决定是否进入研判复核。',
   mode: 'suspicious_review',
+  reviewer_ai_endpoint_id: null,
   field_meta: {
     control: 'segmented',
     placeholder: '',
-    helper_text: '仅对已开启保护的 AI/Agent 生效。',
+    helper_text: '仅对已开启保护的目标和 Runtime 生效。',
     button_text: '',
     empty_text: '',
     options: [
@@ -123,8 +126,19 @@ const FALLBACK_AI_REVIEW_POLICY: AiReviewPolicy = {
   },
 }
 
+const route = useRoute()
+const scopedEndpointId = computed(() => {
+  const value = route.query.ai_endpoint_id
+  const parsed = Number(Array.isArray(value) ? value[0] : value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+})
+
 const { data, loading, error, refresh } = useAsyncData(async () => {
-  const [defenses, profile] = await Promise.all([api.defenseConfigs(), api.defensePolicy()])
+  const endpointId = scopedEndpointId.value
+  const [defenses, profile] = await Promise.all([
+    api.defenseConfigs(endpointId ? { ai_endpoint_id: endpointId } : undefined),
+    api.defensePolicy(endpointId),
+  ])
   return { defenses, profile }
 })
 
@@ -166,6 +180,7 @@ const resourceKindOptions = [
 
 const items = computed<DefenseConfigItem[]>(() => data.value?.defenses.items ?? [])
 const isMutating = computed(() => activeKey.value !== null)
+const scopeModeLabel = computed(() => (scopedEndpointId.value ? '当前目标' : '全局'))
 
 useRouteSectionFocus((focus, route) => {
   if (focus !== 'protected-resources') {
@@ -272,6 +287,7 @@ function buildPolicyPayload() {
       title: aiReviewPolicy.value.title,
       description: aiReviewPolicy.value.description,
       mode: aiReviewPolicy.value.mode,
+      reviewer_ai_endpoint_id: null,
     },
     protected_paths: [...protectedPaths.value],
     protected_skills: [...protectedSkills.value],
@@ -349,6 +365,10 @@ watch(
   { immediate: true }
 )
 
+watch(scopedEndpointId, () => {
+  void refresh()
+})
+
 const primaryEnabled = computed(
   () =>
     items.value.every((item) => item.enabled) &&
@@ -393,6 +413,12 @@ const guardEnabledCount = computed(() => guardRules.value.filter((item) => item.
 const scanEnabledCount = computed(() => scanRules.value.filter((item) => item.enabled).length)
 const executionGuardCount = computed(() => items.value.length + guardRules.value.length)
 const executionGuardEnabledCount = computed(() => remoteEnabledCount.value + guardEnabledCount.value)
+const reviewerSummary = computed(() => {
+  if (aiReviewPolicy.value.mode === 'rules_only') {
+    return '当前为规则直判，不调用研判端。'
+  }
+  return '辅助研判接口和密钥在系统设置中配置。'
+})
 
 const filteredResourceGroups = computed(() => {
   if (activeResourceKind.value === 'all') {
@@ -448,7 +474,7 @@ async function persistProfile(successMessage: string) {
   beginSync('profile')
 
   try {
-    const profile = await api.updateDefensePolicy(buildPolicyPayload())
+    const profile = await api.updateDefensePolicy(buildPolicyPayload(), scopedEndpointId.value)
     updateLocalDataProfile(profile)
     applyProfile(profile)
     finishSync(successMessage)
@@ -466,7 +492,7 @@ async function updateRemoteMode(id: number, enabled: boolean, mode: Mode, config
       enabled,
       mode,
       config_json: configJson ?? {},
-    })
+    }, scopedEndpointId.value)
     replaceRemoteDefenseItem(updated)
     finishSync(`防御配置 #${id} 已自动保存为 ${fieldLabel(modeFieldMeta(updated), updated.mode)} 模式。`)
   } catch (err) {
@@ -489,8 +515,8 @@ async function updateAdvancedRule(patch: Partial<DefensePolicyRule>) {
 }
 
 async function updateAiReviewMode(mode: ReviewMode) {
-  aiReviewPolicy.value = { ...aiReviewPolicy.value, mode }
-  await persistProfile(`AI 复核策略已自动切换为 ${fieldLabel(aiReviewFieldMeta(aiReviewPolicy.value), aiReviewPolicy.value.mode)}。`)
+  aiReviewPolicy.value = { ...aiReviewPolicy.value, mode, reviewer_ai_endpoint_id: null }
+  await persistProfile(`研判复核策略已自动切换为 ${fieldLabel(aiReviewFieldMeta(aiReviewPolicy.value), aiReviewPolicy.value.mode)}。`)
 }
 
 async function updateAll(enabled: boolean, mode: Mode) {
@@ -505,8 +531,8 @@ async function updateAll(enabled: boolean, mode: Mode) {
       ids: items.value.map((item) => item.id),
       enabled,
       mode,
-    })
-    const profile = await api.updateDefensePolicy(buildPolicyPayload())
+    }, scopedEndpointId.value)
+    const profile = await api.updateDefensePolicy(buildPolicyPayload(), scopedEndpointId.value)
     replaceAllRemoteDefenseItems(updatedConfigs.items)
     updateLocalDataProfile(profile)
     applyProfile(profile)
@@ -575,14 +601,31 @@ function toggleCoverage(id: number) {
 </script>
 
 <template>
-  <section class="page-grid config-page">
+  <section :class="['page-grid', 'config-page', { 'scoped-ai-page': scopedEndpointId }]">
+    <AiScopeBanner
+      :endpoint-id="scopedEndpointId"
+      global-title="全局防御策略"
+      global-summary="当前页面正在管理平台级共享规则；从目标页进入时会自动切换成单个目标的专属规则上下文。"
+    />
+    <section v-if="scopedEndpointId" class="scoped-context-callout tone-info">
+      <div class="scoped-context-callout-copy">
+        <strong>当前修改只写入这个目标的专属规则层</strong>
+        <p>这里的防御开关、执行守卫、研判复核策略和受保护资源仅影响当前目标，不会覆盖平台默认防线。</p>
+      </div>
+      <RouterLink class="ghost-button small" :to="{ name: 'defense-config' }">切回全局策略</RouterLink>
+    </section>
     <div v-if="loading" class="empty-state">正在加载配置项...</div>
     <div v-else-if="error" class="empty-state">
       <p>加载失败：{{ error }}</p>
       <button class="ghost-button" type="button" @click="refresh">重试</button>
     </div>
     <template v-else>
-      <PageSection eyebrow="总控" title="全局切换" tone="info">
+      <PageSection
+        :eyebrow="scopeModeLabel"
+        :title="`${scopeModeLabel}防御切换`"
+        :tag="scopedEndpointId ? '目标专属' : '平台默认'"
+        tone="info"
+      >
         <template #toolbar>
           <div class="section-toolbar">
             <div class="section-toolbar-copy">
@@ -1087,7 +1130,7 @@ function toggleCoverage(id: number) {
           </div>
         </article>
       </PageSection>
-      <PageSection id="ai-review" eyebrow="复核" title="AI 复核" tag="三段模式" tone="warn">
+      <PageSection id="ai-review" eyebrow="复核" title="研判复核" tag="三段模式" tone="warn">
         <template #toolbar>
           <div class="section-toolbar">
             <div class="section-toolbar-copy">
@@ -1098,10 +1141,12 @@ function toggleCoverage(id: number) {
                   :tone="fieldTone(aiReviewFieldMeta(aiReviewPolicy), aiReviewPolicy.mode)"
                 />
                 <span>{{ items.length + guardRules.length }} 条执行规则可按当前策略进入复核</span>
+                <span>{{ reviewerSummary }}</span>
                 <span v-if="aiReviewPolicy.category_label">{{ aiReviewPolicy.category_label }}</span>
               </div>
             </div>
             <div class="section-toolbar-actions">
+              <RouterLink class="ghost-button small" to="/system-settings">配置辅助研判接口</RouterLink>
               <div class="mode-group">
                 <button
                   v-for="option in aiReviewFieldMeta(aiReviewPolicy).options"

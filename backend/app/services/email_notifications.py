@@ -19,9 +19,12 @@ from .system_settings_registry import (
     default_system_settings,
     list_email_recipients,
 )
-from .time_utils import beijing_now, format_beijing, parse_utc_iso, to_beijing, utc_now
+from .time_utils import beijing_now, format_beijing, parse_utc_iso, utc_now
 
 logger = logging.getLogger("app.email")
+
+QQ_SMTP_HOST = "smtp.qq.com"
+QQ_SMTP_PORT = 465
 
 _worker_lock = threading.Lock()
 _worker_stop_event = threading.Event()
@@ -37,22 +40,17 @@ class EmailNotificationConfig:
     digest_minutes: int
     subject_prefix: str
     sender: str
-    smtp_host: str
-    smtp_port: int
-    smtp_username: str
-    smtp_password: str
-    smtp_starttls: bool
+    qq_email_account: str
+    qq_email_auth_code: str
 
     def missing_fields(self) -> list[str]:
         missing: list[str] = []
         if not self.recipients:
             missing.append("收件邮箱")
-        if not self.sender:
-            missing.append("发件邮箱")
-        if not self.smtp_host:
-            missing.append("SMTP 主机")
-        if not self.smtp_port:
-            missing.append("SMTP 端口")
+        if not self.qq_email_account:
+            missing.append("QQ 发件邮箱")
+        if not self.qq_email_auth_code:
+            missing.append("QQ 邮箱授权码")
         return missing
 
 
@@ -92,6 +90,16 @@ def stop_email_digest_worker() -> None:
 
 def load_email_notification_config(db: Session) -> EmailNotificationConfig:
     setting_map = system_setting_map(db)
+    # Compatibility fallback: older deployments may still have hidden SMTP-era values.
+    qq_email_account = (
+        setting_map.get("qq_email_account", "").strip()
+        or setting_map.get("notify_email_sender", "").strip()
+        or setting_map.get("smtp_username", "").strip()
+    )
+    qq_email_auth_code = (
+        setting_map.get("qq_email_auth_code", "")
+        or setting_map.get("smtp_password", "")
+    )
     return EmailNotificationConfig(
         enabled=setting_map.get("notify_email", "disabled") == "enabled",
         recipients=list_email_recipients(setting_map.get("notify_email_recipients", "")),
@@ -99,12 +107,9 @@ def load_email_notification_config(db: Session) -> EmailNotificationConfig:
         min_level=setting_map.get("notify_email_min_level", "high"),
         digest_minutes=int(setting_map.get("notify_email_digest_minutes", "30") or "30"),
         subject_prefix=setting_map.get("notify_email_subject_prefix", "[蓝队防御]").strip() or "[蓝队防御]",
-        sender=setting_map.get("notify_email_sender", "").strip(),
-        smtp_host=setting_map.get("smtp_host", "").strip(),
-        smtp_port=int(setting_map.get("smtp_port", "587") or "587"),
-        smtp_username=setting_map.get("smtp_username", "").strip(),
-        smtp_password=setting_map.get("smtp_password", ""),
-        smtp_starttls=setting_map.get("smtp_starttls", "enabled") == "enabled",
+        sender=qq_email_account,
+        qq_email_account=qq_email_account,
+        qq_email_auth_code=qq_email_auth_code,
     )
 
 
@@ -117,8 +122,9 @@ def send_test_email(db: Session) -> dict[str, str]:
     subject = f"{config.subject_prefix} {template['subject']}（测试）".strip()
     body = (
         f"{template['intro']}\n\n"
-        f"这是一封测试邮件，用于验证平台邮件提醒链路。\n"
+        "这是一封测试邮件，用于验证平台 QQ 邮箱告警链路。\n"
         f"时间：{sent_at.strftime('%Y-%m-%d %H:%M:%S')} 北京时间\n"
+        f"发件账号：{config.qq_email_account}\n"
         f"收件人：{', '.join(config.recipients)}\n"
         f"发送阈值：{config.min_level}\n"
         f"汇总周期：{config.digest_minutes} 分钟\n"
@@ -126,6 +132,7 @@ def send_test_email(db: Session) -> dict[str, str]:
     _dispatch_email(config, subject, body)
     return {
         "subject": subject,
+        "sender": config.qq_email_account,
         "recipients": ", ".join(config.recipients),
         "sent_at": sent_at.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -171,7 +178,9 @@ def apply_email_digest_cycle() -> dict[str, str]:
 
         last_digest_at = parse_utc_iso(setting_map.get("notify_email_last_digest_at", ""))
         now_utc = utc_now().replace(microsecond=0)
-        if last_digest_at is not None and now_utc < (last_digest_at + timedelta(minutes=config.digest_minutes)).replace(tzinfo=None):
+        if last_digest_at is not None and now_utc < (last_digest_at + timedelta(minutes=config.digest_minutes)).replace(
+            tzinfo=None
+        ):
             return {"status": "waiting", "detail": "尚未到达汇总发送周期"}
 
         subject, body = _build_digest_email(config, qualifying_events)
@@ -223,7 +232,7 @@ def _ensure_sendable(config: EmailNotificationConfig, *, require_enabled: bool) 
         raise ValueError("邮件提醒未启用")
     missing = config.missing_fields()
     if missing:
-        raise ValueError(f"邮件提醒配置不完整：{', '.join(missing)}")
+        raise ValueError(f"邮件提醒配置不完整: {', '.join(missing)}")
 
 
 def _dispatch_email(config: EmailNotificationConfig, subject: str, body: str) -> None:
@@ -233,13 +242,9 @@ def _dispatch_email(config: EmailNotificationConfig, subject: str, body: str) ->
     message["To"] = ", ".join(config.recipients)
     message.set_content(body)
 
-    with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=15) as client:
+    with smtplib.SMTP_SSL(QQ_SMTP_HOST, QQ_SMTP_PORT, timeout=15) as client:
         client.ehlo()
-        if config.smtp_starttls:
-            client.starttls()
-            client.ehlo()
-        if config.smtp_username:
-            client.login(config.smtp_username, config.smtp_password)
+        client.login(config.qq_email_account, config.qq_email_auth_code)
         client.send_message(message)
 
 
@@ -256,6 +261,7 @@ def _build_digest_email(config: EmailNotificationConfig, events: list[SecurityEv
     body = (
         f"{template['intro']}\n\n"
         f"生成时间：{beijing_now().strftime('%Y-%m-%d %H:%M:%S')} 北京时间\n"
+        f"发件账号：{config.qq_email_account}\n"
         f"汇总条数：{len(events)}\n"
         f"发送阈值：{config.min_level}\n"
         f"汇总周期：{config.digest_minutes} 分钟\n\n"
@@ -266,7 +272,7 @@ def _build_digest_email(config: EmailNotificationConfig, events: list[SecurityEv
 
 
 def _upsert_setting(db: Session, key: str, value: str, description: str) -> None:
-    item = db.query(SystemSetting).get(key)
+    item = db.get(SystemSetting, key)
     if item is None:
         item = SystemSetting(setting_key=key, setting_value=value, description=description)
         db.add(item)

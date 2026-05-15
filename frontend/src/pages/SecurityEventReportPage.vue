@@ -12,6 +12,7 @@ import {
   type SecurityReportPayloadItem,
   type SensitiveFindingItem
 } from '../services/api'
+import { buildAttackSummary } from '../services/attackSummary'
 import { eventStatusLabel, eventStatusTone } from '../services/eventStatus'
 import { buildRawHighlightSectionViews, buildRawLocationKey } from '../services/rawHighlight'
 import { redactSensitiveText } from '../services/redaction'
@@ -113,12 +114,12 @@ const REPORT_SUMMARY_LABELS: Record<string, string> = {
   source_ref: '来源引用',
   execution_mode: '执行方式',
   result: '执行结论',
-  ai_endpoint: 'AI 目标',
+  ai_endpoint: '接入目标',
   ai_endpoint_provider: '目标提供方',
   ai_endpoint_model: '目标模型',
   ai_endpoint_protection: '保护模式',
-  ai_review_mode: 'AI 复核模式',
-  ai_review_invoked: '是否触发 AI 复核',
+  ai_review_mode: '研判模式',
+  ai_review_invoked: '是否触发研判',
   review_decision: '复核结论',
   rule_verdict: '规则判定',
   authorization_decision: '授权决策',
@@ -164,29 +165,6 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   security_evaluation: '安全评估报告'
 }
 
-const OPERATION_ACTION_LABELS: Record<string, string> = {
-  task_started: '任务启动',
-  rule_engine_assessed: '规则引擎评估',
-  policy_enforcer_assessed: '策略授权评估',
-  ai_review_started: 'AI 复核启动',
-  provider_completed: '模型调用完成',
-  runtime_complete: '运行时结果回传',
-  blocked: '已拦截',
-  pending: '可疑',
-  closed: '已放行',
-  intercepted: '已拦截',
-  suspicious: '可疑',
-  allowed: '已放行',
-  done: '已完成',
-  failed: '执行失败'
-}
-
-const OPERATOR_LABELS: Record<string, string> = {
-  worker: '平台 Worker',
-  system: '系统',
-  'external-runtime': '外部运行时'
-}
-
 const route = useRoute()
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -203,6 +181,13 @@ const eventId = computed(() => {
 })
 
 const guardTrace = computed<GuardTrace | null>(() => data.value?.event.guard_trace ?? data.value?.task?.guard_trace ?? null)
+const attackSummary = computed(() =>
+  buildAttackSummary({
+    eventType: data.value?.event.event_type ?? null,
+    hitRules: data.value?.event.hit_rules ?? [],
+    guardTrace: guardTrace.value
+  })
+)
 const reportSummaryEntries = computed<ReportSummaryEntry[]>(() =>
   (data.value?.report?.summary_text.split('\n').filter(Boolean) ?? [])
     .map((line, index) => buildReportSummaryEntry(line, index))
@@ -245,7 +230,6 @@ const payloadSections = computed<PayloadSection[]>(() =>
 const sensitiveCategories = computed(() => data.value?.sensitive_findings.categories ?? [])
 const sensitiveItems = computed(() => data.value?.sensitive_findings.items ?? [])
 const rawSections = computed(() => data.value?.raw_sections ?? [])
-const operationLogs = computed(() => data.value?.event.operation_logs ?? [])
 const reportTriggerSummary = computed(() => data.value?.event.trigger_summary || buildReportTriggerSummary(guardTrace.value))
 const reportTriggerSupportText = computed(() => data.value?.event.trigger_support_text || buildReportTriggerSupportText(guardTrace.value))
 const reportHeaderRouteText = computed(() => {
@@ -328,9 +312,9 @@ function aiReviewDecisionLabel(value?: string | null) {
   const key = (value || '').trim().toLowerCase()
   if (key === 'review_suspicious_only') return '仅复核可疑请求'
   if (key === 'review_all_remaining') return '对剩余请求执行复核'
-  if (key === 'rules_only_mode') return '仅规则判定，不触发 AI 复核'
+  if (key === 'rules_only_mode') return '仅规则判定，不触发研判复核'
   if (key === 'confirmed_by_policy') return '已被策略确认，无需再次复核'
-  if (key === 'target_protection_disabled') return '目标未开启 AI 防护'
+  if (key === 'target_protection_disabled') return '目标未开启防护'
   return value || '未记录'
 }
 
@@ -641,9 +625,9 @@ function buildReportTriggerSummary(trace?: GuardTrace | null) {
       segments.push('控制面已直接拦截本次请求。')
     }
   } else if (trace.decision === 'review') {
-    segments.push(trace.ai_review_invoked ? '命中可疑项后已进入 AI 复核。' : '命中可疑项，当前等待复核。')
+    segments.push(trace.ai_review_invoked ? '命中可疑项后已进入研判复核。' : '命中可疑项，当前等待复核。')
   } else if (trace.ai_review_invoked) {
-    segments.push('请求经过 AI 复核后继续执行。')
+    segments.push('请求经过研判复核后继续执行。')
   } else if (trace.rule_verdict === 'clean') {
     segments.push('规则未判定为明确攻击。')
   } else {
@@ -663,16 +647,16 @@ function buildReportTriggerSupportText(trace?: GuardTrace | null) {
   }
 
   if (trace.ai_review_invoked) {
-    return 'AI 复核已触发，明细默认折叠，按需展开查看。'
+    return '研判复核已触发，明细默认折叠，按需展开查看。'
   }
   if (trace.review_decision?.trim().toLowerCase() === 'target_protection_disabled') {
-    return '该目标未开启 AI 复核，本次仅按现有规则和控制面判定。'
+    return '该目标未开启研判复核，本次仅按现有规则和控制面判定。'
   }
   if (isAiReviewDisabled(trace)) {
-    return '当前策略未启用 AI 复核，本次仅按规则直接判定。'
+    return '当前策略未启用研判复核，本次仅按规则直接判定。'
   }
   if (trace.review_decision?.trim().toLowerCase() === 'confirmed_by_policy') {
-    return '规则已完成定性，因此没有再次触发 AI 复核。'
+    return '规则已完成定性，因此没有再次触发研判复核。'
   }
   return '本页默认只展示摘要，详细命中项请展开下方分组。'
 }
@@ -703,25 +687,6 @@ function togglePayloadSection(key: PayloadSectionKey) {
     ...payloadSectionExpanded.value,
     [key]: !payloadSectionExpanded.value[key]
   }
-}
-
-function operationActionLabel(item: { action?: string; operator?: string }) {
-  const action = (item.action || item.operator || '').trim()
-  if (!action) {
-    return '未记录动作'
-  }
-  if (action.startsWith('ai_review_skipped:')) {
-    return `AI 复核跳过 / ${aiReviewDecisionLabel(action.slice('ai_review_skipped:'.length))}`
-  }
-  return OPERATION_ACTION_LABELS[action] || humanizeTechnicalValue(action)
-}
-
-function operationOperatorLabel(item: { action?: string; operator?: string }) {
-  const operator = (item.action ? item.operator || '' : '').trim()
-  if (!operator) {
-    return '系统'
-  }
-  return OPERATOR_LABELS[operator] || operator
 }
 
 function resolveRawLocationKey(source?: string | null, location?: string | null) {
@@ -1075,7 +1040,7 @@ function triggerFileDownload(file: DownloadedFile) {
                       :tone="guardTrace.reused ? 'safe' : 'info'"
                     />
                     <StatusPill
-                      :label="guardTrace.ai_review_invoked ? '已触发 AI 复核' : '未触发 AI 复核'"
+                    :label="guardTrace.ai_review_invoked ? '已触发研判' : '未触发研判'"
                       :tone="guardTrace.ai_review_invoked ? 'warn' : 'info'"
                     />
                   </div>
@@ -1090,21 +1055,20 @@ function triggerFileDownload(file: DownloadedFile) {
               <article class="field-card field-card-compact">
                 <div class="field-head">
                   <div>
-                    <h4>操作日志</h4>
+                    <h4>攻击结论</h4>
                   </div>
-                  <small class="field-count">{{ operationLogs.length }} 条</small>
+                  <small class="field-count">{{ attackSummary.brief }}</small>
                 </div>
-                <div v-if="operationLogs.length" class="log-list">
-                  <div
-                    v-for="(item, index) in operationLogs"
-                    :key="`${item.time}-${index}`"
-                    class="log-row"
-                  >
-                    <strong>{{ operationActionLabel(item) }}</strong>
-                    <span>{{ operationOperatorLabel(item) }} / {{ item.time }}</span>
-                  </div>
+                <div class="detail-block">
+                  <p class="security-summary-note">{{ attackSummary.label }}</p>
+                  <p class="security-summary-subnote">{{ attackSummary.supportText }}</p>
+                  <p class="security-summary-subnote">{{ attackSummary.brief }}</p>
                 </div>
-                <div v-else class="token-empty">当前事件没有操作日志。</div>
+                <div class="token-list">
+                  <StatusPill :label="`控制面 ${attackSummary.counts.controls}`" tone="safe" />
+                  <StatusPill :label="`规则 ${attackSummary.counts.rules}`" tone="warn" />
+                  <StatusPill :label="`信号 ${attackSummary.counts.signals}`" tone="danger" />
+                </div>
               </article>
             </div>
           </PageSection>
