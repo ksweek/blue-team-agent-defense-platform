@@ -10,6 +10,7 @@ const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g
 const OPENAI_KEY_RE = /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g
 const ANTHROPIC_KEY_RE = /\bsk-ant-[A-Za-z0-9_-]{12,}\b/g
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g
+const URL_RE = /\b(?:https?|wss?|runtime):\/\/[^\s"'<>)}\],;]+/gi
 const WINDOWS_PATH_RE = /\b(?:[A-Za-z]:\\|\\\\)[^\s"'<>|]+/g
 const UNIX_PATH_RE = /(^|[^A-Za-z0-9:])((?:\/[^/\s"'`]+){2,})/g
 const SENSITIVE_FIELD_KEY_RE =
@@ -58,6 +59,39 @@ export function maskEmail(value: string) {
   return `${visible}***@${domain}`
 }
 
+export function maskUrlLike(value: string) {
+  const text = value.trim()
+  if (!text) {
+    return ''
+  }
+
+  const matched = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)(.*)$/)
+  if (!matched) {
+    return maskMiddle(text, 4, 3)
+  }
+
+  const scheme = matched[1]
+  const rest = matched[2]
+  if (!rest) {
+    return `${scheme}***`
+  }
+
+  if (/^runtime:\/\//i.test(scheme)) {
+    return `${scheme}${maskMiddle(rest, 2, 2)}`
+  }
+
+  try {
+    const url = new URL(text)
+    const maskedHost = maskMiddle(url.host, 2, 3)
+    const path = url.pathname && url.pathname !== '/' ? maskUnixPath(url.pathname) : ''
+    const query = url.search ? '?***' : ''
+    const hash = url.hash ? '#***' : ''
+    return `${url.protocol}//${maskedHost}${path}${query}${hash}`
+  } catch {
+    return `${scheme}${maskMiddle(rest, 2, 3)}`
+  }
+}
+
 export function maskWindowsPath(value: string) {
   const normalized = value.replace(/\//g, '\\')
   const segments = normalized.split(/\\+/).filter(Boolean)
@@ -93,6 +127,7 @@ export function redactSensitiveText(value: string | null | undefined) {
   text = text.replace(OPENAI_KEY_RE, (token) => maskMiddle(token, 8, 4))
   text = text.replace(ANTHROPIC_KEY_RE, (token) => maskMiddle(token, 8, 4))
   text = text.replace(EMAIL_RE, (email) => maskEmail(email))
+  text = text.replace(URL_RE, (url) => maskUrlLike(url))
   text = text.replace(WINDOWS_PATH_RE, (path) => maskWindowsPath(path))
   text = text.replace(UNIX_PATH_RE, (match, prefix, path) => {
     if (!shouldMaskUnixPath(path)) {
@@ -251,6 +286,9 @@ export function redactSettingValue(settingKey: string, value: string | null | un
   }
   if (settingKey === 'qq_email_account' || settingKey === 'notify_email_sender' || settingKey === 'smtp_username') {
     return maskEmail(value)
+  }
+  if (settingKey === 'review_ai_api_url') {
+    return maskUrlLike(value)
   }
   return redactSensitiveText(value)
 }

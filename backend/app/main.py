@@ -7,18 +7,28 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from .api.router import api_router
 from .api.routes import gateway
 from .core.config import settings
-from .core.logging import configure_logging, reset_request_id, set_request_id
+from .core.logging import configure_logging, current_request_id, reset_request_id, set_request_id
 from .core.response import error_code_from_status, failure
 from .db.session import SessionLocal, ping_database
 from .models import AiEndpoint
-from .services.email_notifications import start_email_digest_worker, stop_email_digest_worker
 from .services.bootstrap import init_database, validate_runtime_configuration
+from .services.cache import cache_service
+from .services.email_notifications import start_email_digest_worker, stop_email_digest_worker
 from .services.model_provider import provider_status
+from .services.request_security import (
+    buffer_request_body_with_limit,
+    build_response_security_headers,
+    http_body_limit_bytes,
+    redact_mapping,
+    redact_url,
+    redact_validation_errors,
+)
 from .services.task_worker import start_task_worker, stop_task_worker, task_worker_snapshot
 
 configure_logging()
@@ -29,7 +39,7 @@ request_logger = logging.getLogger("app.http")
 
 def _request_target(request: Request) -> str:
     if request.url.query:
-        return f"{request.url.path}?{request.url.query}"
+        return redact_url(f"{request.url.path}?{request.url.query}")
     return request.url.path
 
 
@@ -41,6 +51,11 @@ def _request_log_method(status_code: int, path: str):
     if status_code >= 400:
         return request_logger.warning
     return request_logger.info
+
+
+def _apply_response_security_headers(response, request: Request) -> None:
+    for header_name, header_value in build_response_security_headers(scheme=request.url.scheme).items():
+        response.headers.setdefault(header_name, header_value)
 
 
 def create_app() -> FastAPI:
@@ -61,6 +76,8 @@ def create_app() -> FastAPI:
         description="Blue Team backend for function-calling agent defense workflows.",
     )
 
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -77,18 +94,41 @@ def create_app() -> FastAPI:
         started_at = perf_counter()
         client_host = request.client.host if request.client else "-"
         target = _request_target(request)
+        safe_headers = redact_mapping(
+            {
+                "host": request.headers.get("host", ""),
+                "origin": request.headers.get("origin", ""),
+                "user_agent": request.headers.get("user-agent", ""),
+            }
+        )
 
         try:
+            if request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+                try:
+                    await buffer_request_body_with_limit(request, max_bytes=http_body_limit_bytes())
+                except HTTPException as exc:
+                    response = JSONResponse(
+                        status_code=exc.status_code,
+                        content=failure(error_code_from_status(exc.status_code), str(exc.detail)),
+                        headers=exc.headers or {},
+                    )
+                    response.headers["X-Request-ID"] = request_id
+                    _apply_response_security_headers(response, request)
+                    return response
+
             response = await call_next(request)
             duration_ms = int((perf_counter() - started_at) * 1000)
             response.headers["X-Request-ID"] = request_id
+            _apply_response_security_headers(response, request)
             _request_log_method(response.status_code, request.url.path)(
-                "%s %s -> %s %dms ip=%s",
+                "%s %s -> %s %dms ip=%s host=%s origin=%s",
                 request.method,
                 target,
                 response.status_code,
                 duration_ms,
                 client_host,
+                safe_headers["host"],
+                safe_headers["origin"],
             )
             return response
         finally:
@@ -99,10 +139,12 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content=failure(error_code_from_status(exc.status_code), str(exc.detail)),
+            headers=exc.headers or {},
         )
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        exc._errors = redact_validation_errors(exc.errors())
         app_logger.warning(
             "request validation failed | method=%s path=%s errors=%s",
             request.method,
@@ -121,9 +163,12 @@ def create_app() -> FastAPI:
             request.method,
             request.url.path,
         )
+        error_data = {"request_id": current_request_id()}
+        if settings.expose_internal_error_details:
+            error_data["detail"] = str(exc)
         return JSONResponse(
             status_code=500,
-            content=failure(5001, f"服务内部错误: {exc}"),
+            content=failure(5001, "服务内部错误", error_data),
         )
 
     @app.on_event("startup")
@@ -140,12 +185,15 @@ def create_app() -> FastAPI:
             endpoint_count = db.query(AiEndpoint).filter(AiEndpoint.enabled.is_(True)).count()
         finally:
             db.close()
+        cache_snapshot = cache_service.snapshot()
         app_logger.info(
-            "startup complete | provider=%s model=%s configured=%s managed_endpoints=%s",
+            "startup complete | provider=%s model=%s configured=%s managed_endpoints=%s cache=%s fallback=%s",
             snapshot["provider"],
             snapshot["model"] or "-",
             snapshot["configured"],
             endpoint_count,
+            cache_snapshot["effective_backend"],
+            cache_snapshot["fallback_active"],
         )
 
     @app.on_event("shutdown")
@@ -172,6 +220,7 @@ def create_app() -> FastAPI:
         finally:
             db.close()
         ai_configured = endpoint_count > 0 or provider_snapshot["configured"]
+        cache_snapshot = cache_service.snapshot()
         return {
             "status": "ok",
             "service": "blue-team-backend",
@@ -180,6 +229,8 @@ def create_app() -> FastAPI:
             "ai_provider": "managed" if endpoint_count > 0 else str(provider_snapshot["provider"]),
             "ai_configured": "true" if ai_configured else "false",
             "ai_targets": str(endpoint_count),
+            "cache_backend": str(cache_snapshot["effective_backend"]),
+            "cache_fallback": "true" if cache_snapshot["fallback_active"] else "false",
         }
 
     app.include_router(api_router, prefix="/api")

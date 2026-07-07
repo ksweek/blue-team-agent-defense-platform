@@ -1,6 +1,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.logging import set_runtime_log_level
@@ -105,16 +106,36 @@ def list_audit_logs(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin")),
 ):
-    data = [_serialize_audit_log(item) for item in db.query(AuditLog).order_by(AuditLog.created_at.desc()).all()]
-
+    query = db.query(AuditLog)
     if module:
-        data = [item for item in data if item["module"] == module]
+        query = query.filter(AuditLog.module == module)
     if action:
-        data = [item for item in data if item["action"] == action]
+        query = query.filter(AuditLog.action == action)
     if keyword:
-        data = [item for item in data if contains_keyword(item, keyword, ["module", "action", "detail"])]
+        search = f"%{keyword.strip()}%"
+        query = query.filter(
+            or_(
+                AuditLog.module.ilike(search),
+                AuditLog.action.ilike(search),
+                AuditLog.detail.ilike(search),
+            )
+        )
 
-    return success(paginate(data, page=page, page_size=page_size))
+    total = query.count()
+    items = (
+        query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return success(
+        {
+            "items": [_serialize_audit_log(item) for item in items],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @router.post("/actions/{action_key}")

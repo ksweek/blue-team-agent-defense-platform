@@ -23,6 +23,7 @@ from ...services.policy_enforcer import (
     append_task_authorization_snapshot,
     authorize_runtime_action,
     serialize_authorization_decision,
+    serialize_authorization_decision_for_storage,
 )
 from ...services.task_runner import record_task_outcome
 from ...services.time_utils import format_beijing, utc_now
@@ -196,7 +197,7 @@ def authorize_runtime_task(
         item,
         {
             "authorization_at": format_beijing(now),
-            "authorization_result": serialized_decision,
+            "authorization_result": serialize_authorization_decision_for_storage(decision),
             "mcp_execution_ticket": serialize_mcp_execution_ticket(issued_ticket) if issued_ticket is not None else None,
         },
     )

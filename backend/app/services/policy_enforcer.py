@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +41,85 @@ HIGH_RISK_SCOPES = {
     "secrets",
     "privileged",
 }
+
+TEXT_PATH_CANDIDATE_KEYS = (
+    "message",
+    "prompt",
+    "input",
+    "input_text",
+    "content",
+    "text",
+    "query",
+    "question",
+    "request_excerpt",
+    "raw_input",
+)
+SKILL_PAYLOAD_KEYS = {
+    "skill",
+    "skills",
+    "skill_name",
+    "skill_names",
+    "tool",
+    "tools",
+    "tool_name",
+    "tool_names",
+    "tool_call",
+    "tool_calls",
+    "function_call",
+    "function_calls",
+    "selected_tool",
+    "selected_tools",
+}
+PLUGIN_PAYLOAD_KEYS = {
+    "plugin",
+    "plugins",
+    "plugin_name",
+    "plugin_names",
+    "plugin_id",
+    "plugin_ids",
+    "source_plugin",
+    "target_plugin",
+    "extensions",
+    "connected_plugins",
+}
+SCOPE_PAYLOAD_KEYS = {
+    "requested_scopes",
+    "scopes",
+    "scope",
+    "permissions",
+    "permission",
+    "allowed_scopes",
+    "tool_scopes",
+    "operator_scopes",
+}
+MCP_FIELD_KEYS = {
+    "mcp_server",
+    "server_name",
+    "capability_name",
+    "mcp_capability",
+    "session_id",
+    "session_key",
+    "approval_id",
+    "handoff_token",
+    "tool_call_id",
+    "openclaw_tool_call_id",
+    "call_id",
+    "ws_call_id",
+    "operation_type",
+    "openclaw_operation_type",
+    "event_name",
+    "openclaw_event_name",
+    "request_args_hash",
+    "mcp_ticket_key",
+}
+GENERIC_NAME_KEYS = {"name", "id", "key", "value", "label"}
+WINDOWS_PATH_RE = re.compile(r"(?i)(?<![A-Za-z0-9])[a-z]:[\\/][^\s\"'`<>|]+")
+UNIX_PATH_RE = re.compile(r"(?<![:/\\\w])/(?!/)[^\s\"'`<>|]+")
+PATH_TRAILING_CHARS = (
+    ".,;:!?"
+    "\uFF0C\u3002\uFF1B\uFF1A\uFF01\uFF1F\u3001"
+    ")]}\uFF09\u3011\u300B\"'"
+)
 RESTRICTED_APPROVAL_SCOPES = {
     "request",
     "navigate",
@@ -128,6 +208,97 @@ def serialize_authorization_decision(item: AuthorizationDecision) -> dict[str, A
     }
 
 
+AUTHORIZATION_REDACTION_NOTICE = "[blocked runtime authorization content redacted]"
+AUTHORIZATION_TEXT_KEYS = set(TEXT_PATH_CANDIDATE_KEYS) | {
+    "content",
+    "turns",
+    "message",
+    "messages",
+    "params_json",
+    "raw_input",
+    "request_excerpt",
+}
+AUTHORIZATION_PATH_KEYS = {
+    "path",
+    "paths",
+    "target_path",
+    "asset_path",
+    "file_path",
+    "file_paths",
+    "cwd",
+    "workspace",
+    "workdir",
+    "directory",
+    "workspace_root",
+    "project_path",
+    "project_root",
+    "working_directory",
+    "current_directory",
+    "selected_path",
+    "selected_paths",
+}
+
+
+def sanitize_authorization_snapshot_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        updated: dict[str, Any] = {}
+        for key, value in payload.items():
+            normalized = _normalize_payload_key(key)
+            if normalized in AUTHORIZATION_TEXT_KEYS:
+                updated[key] = AUTHORIZATION_REDACTION_NOTICE
+                continue
+            if normalized in AUTHORIZATION_PATH_KEYS:
+                updated[key] = []
+                continue
+            if normalized == "context" and isinstance(value, dict):
+                updated[key] = sanitize_authorization_context_for_storage(value)
+                continue
+            updated[key] = sanitize_authorization_snapshot_payload(value)
+        return updated
+    if isinstance(payload, list):
+        return [sanitize_authorization_snapshot_payload(item) for item in payload]
+    if isinstance(payload, str):
+        return _redact_paths_in_text(payload)
+    return payload
+
+
+def _redact_paths_in_text(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    for pattern in (WINDOWS_PATH_RE, UNIX_PATH_RE):
+        text = pattern.sub("[redacted-path]", text)
+    return text
+
+
+def sanitize_authorization_context_for_storage(context: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(context or {})
+    sanitized["input_text"] = AUTHORIZATION_REDACTION_NOTICE
+    sanitized["paths"] = []
+    if "turns" in sanitized:
+        sanitized["turns"] = []
+    return {
+        key: sanitize_authorization_snapshot_payload(value)
+        for key, value in sanitized.items()
+    }
+
+
+def serialize_authorization_decision_for_storage(item: AuthorizationDecision) -> dict[str, Any]:
+    serialized = serialize_authorization_decision(item)
+    if not _authorization_snapshot_needs_redaction(item):
+        return serialized
+    return sanitize_authorization_snapshot_payload(serialized)
+
+
+def _authorization_snapshot_needs_redaction(item: AuthorizationDecision) -> bool:
+    if item.decision == DECISION_DENY:
+        return True
+    context = item.context or {}
+    if context.get("paths"):
+        return True
+    return bool(_extract_paths_from_text_values(context.get("input_text"), context.get("metadata")))
+
+
 def append_task_authorization_snapshot(
     task: AttackTask,
     *,
@@ -139,8 +310,8 @@ def append_task_authorization_snapshot(
     history = list(runtime_state.get("authorizations") or [])
     snapshot = {
         "authorized_at": format_beijing(utc_now()) or "",
-        "action": action,
-        "result": serialize_authorization_decision(decision),
+        "action": sanitize_authorization_snapshot_payload(action) if _authorization_snapshot_needs_redaction(decision) else action,
+        "result": serialize_authorization_decision_for_storage(decision),
     }
     history.append(snapshot)
     runtime_state["authorizations"] = history[-20:]
@@ -276,46 +447,71 @@ def _authorize(db: Session, *, task: AttackTask, payload: dict[str, Any]) -> Aut
 def _normalize_action_payload(task: AttackTask, action: dict[str, Any]) -> dict[str, Any]:
     params = task.params
     metadata = dict(action.get("metadata") or {})
+    input_text = str(action.get("input_text") or "").strip()
+    if not input_text:
+        input_text = str(metadata.get("message") or metadata.get("prompt") or params.get("content") or "")
+    mcp_fields = _collect_named_fields(action, metadata, params, wanted_keys=MCP_FIELD_KEYS)
 
     payload = {
         "action_type": str(action.get("action_type") or ACTION_TASK_EXECUTION).strip().lower() or ACTION_TASK_EXECUTION,
         "runtime_name": str(action.get("runtime_name") or task.runtime_name or "").strip(),
         "runtime_task_ref": str(action.get("runtime_task_ref") or task.runtime_task_ref or "").strip(),
-        "input_text": str(action.get("input_text") or "").strip(),
+        "input_text": input_text.strip(),
         "paths": _normalize_string_list(
             action.get("paths"),
             action.get("target_path"),
+            action.get("file_path"),
+            action.get("path"),
+            metadata.get("paths"),
+            metadata.get("target_path"),
+            metadata.get("file_path"),
+            metadata.get("path"),
             params.get("paths"),
             params.get("target_path"),
             params.get("asset_path"),
             params.get("file_path"),
             params.get("path"),
+            _extract_paths_from_text_values(
+                input_text,
+                metadata,
+                params.get("content"),
+                params.get("turns"),
+                params.get("raw_input"),
+            ),
         ),
         "skill_names": _normalize_string_list(
             action.get("skill_names"),
             action.get("skill_name"),
+            metadata.get("skill_names"),
+            metadata.get("skill_name"),
             params.get("skill_names"),
             params.get("skill_name"),
+            _extract_structured_names(action, metadata, params, wanted_keys=SKILL_PAYLOAD_KEYS),
         ),
         "plugin_names": _normalize_string_list(
             action.get("plugin_names"),
             action.get("plugin_name"),
+            metadata.get("plugin_names"),
+            metadata.get("plugin_name"),
             params.get("plugin_names"),
             params.get("plugin_name"),
+            _extract_structured_names(action, metadata, params, wanted_keys=PLUGIN_PAYLOAD_KEYS),
         ),
-        "call_id": str(action.get("call_id") or metadata.get("ws_call_id") or params.get("call_id") or "").strip(),
-        "source_plugin": str(action.get("source_plugin") or metadata.get("source_plugin") or params.get("source_plugin") or "").strip(),
-        "target_plugin": str(action.get("target_plugin") or metadata.get("target_plugin") or params.get("target_plugin") or "").strip(),
-        "mcp_server": str(action.get("mcp_server") or metadata.get("mcp_server") or params.get("mcp_server") or "").strip(),
-        "capability_name": str(action.get("capability_name") or metadata.get("capability_name") or params.get("capability_name") or "").strip(),
-        "session_id": str(action.get("session_id") or metadata.get("session_id") or params.get("session_id") or "").strip(),
-        "approval_id": str(action.get("approval_id") or metadata.get("approval_id") or params.get("approval_id") or "").strip(),
-        "handoff_token": str(action.get("handoff_token") or metadata.get("handoff_token") or params.get("handoff_token") or "").strip(),
+        "call_id": _first_string(action.get("call_id"), metadata.get("ws_call_id"), params.get("call_id"), mcp_fields.get("call_id"), mcp_fields.get("ws_call_id")),
+        "source_plugin": _first_string(action.get("source_plugin"), metadata.get("source_plugin"), params.get("source_plugin"), mcp_fields.get("source_plugin")),
+        "target_plugin": _first_string(action.get("target_plugin"), metadata.get("target_plugin"), params.get("target_plugin"), mcp_fields.get("target_plugin")),
+        "mcp_server": _first_string(action.get("mcp_server"), metadata.get("mcp_server"), params.get("mcp_server"), mcp_fields.get("mcp_server"), mcp_fields.get("server_name")),
+        "capability_name": _first_string(action.get("capability_name"), metadata.get("capability_name"), params.get("capability_name"), mcp_fields.get("capability_name"), mcp_fields.get("mcp_capability")),
+        "session_id": _first_string(action.get("session_id"), metadata.get("session_id"), params.get("session_id"), mcp_fields.get("session_id"), mcp_fields.get("session_key")),
+        "approval_id": _first_string(action.get("approval_id"), metadata.get("approval_id"), params.get("approval_id"), mcp_fields.get("approval_id")),
+        "handoff_token": _first_string(action.get("handoff_token"), metadata.get("handoff_token"), params.get("handoff_token"), mcp_fields.get("handoff_token")),
         "tool_call_id": str(
             action.get("tool_call_id")
             or metadata.get("tool_call_id")
             or metadata.get("openclaw_tool_call_id")
             or params.get("tool_call_id")
+            or mcp_fields.get("tool_call_id")
+            or mcp_fields.get("openclaw_tool_call_id")
             or ""
         ).strip(),
         "operation_type": str(
@@ -323,6 +519,8 @@ def _normalize_action_payload(task: AttackTask, action: dict[str, Any]) -> dict[
             or metadata.get("operation_type")
             or metadata.get("openclaw_operation_type")
             or params.get("operation_type")
+            or mcp_fields.get("operation_type")
+            or mcp_fields.get("openclaw_operation_type")
             or ""
         ).strip().lower(),
         "event_name": str(
@@ -330,18 +528,22 @@ def _normalize_action_payload(task: AttackTask, action: dict[str, Any]) -> dict[
             or metadata.get("event_name")
             or metadata.get("openclaw_event_name")
             or params.get("event_name")
+            or mcp_fields.get("event_name")
+            or mcp_fields.get("openclaw_event_name")
             or ""
         ).strip(),
         "mcp_ticket_key": str(
             action.get("mcp_ticket_key")
             or metadata.get("mcp_ticket_key")
             or params.get("mcp_ticket_key")
+            or mcp_fields.get("mcp_ticket_key")
             or ""
         ).strip(),
         "request_args_hash": str(
             action.get("request_args_hash")
             or metadata.get("request_args_hash")
             or params.get("request_args_hash")
+            or mcp_fields.get("request_args_hash")
             or ""
         ).strip(),
         "consume_mcp_ticket": bool(
@@ -353,12 +555,11 @@ def _normalize_action_payload(task: AttackTask, action: dict[str, Any]) -> dict[
             action.get("requested_scopes"),
             metadata.get("requested_scopes"),
             params.get("requested_scopes"),
+            _extract_structured_names(action, metadata, params, wanted_keys=SCOPE_PAYLOAD_KEYS),
         ),
         "metadata": metadata,
     }
 
-    if not payload["input_text"]:
-        payload["input_text"] = str(metadata.get("message") or metadata.get("prompt") or "")
     return payload
 
 
@@ -372,7 +573,7 @@ def _apply_path_checks(
     if not target_paths:
         return
 
-    assets = db.query(Asset).filter(Asset.asset_type == "path").order_by(Asset.id.asc()).all()
+    assets = db.query(Asset).filter(Asset.asset_type.in_(["path", "directory"])).order_by(Asset.id.asc()).all()
     whitelist_rows = db.query(AssetWhitelist).order_by(AssetWhitelist.id.asc()).all()
     whitelists_by_asset: dict[int, list[AssetWhitelist]] = {}
     for row in whitelist_rows:
@@ -442,17 +643,6 @@ def _apply_skill_checks(
         if skill is not None and skill.trust_status == "trusted":
             continue
 
-        if skill is not None and skill.trust_status == "pending":
-            add_issue(
-                "tool_permission_broker",
-                "workspace-scan",
-                DECISION_REVIEW,
-                "Skill invocation requires review",
-                f"Skill {name} is still pending trust approval.",
-                target=name,
-            )
-            continue
-
         if is_protected:
             add_issue(
                 "tool_permission_broker",
@@ -460,6 +650,17 @@ def _apply_skill_checks(
                 DECISION_DENY,
                 "Protected skill invocation was denied",
                 f"Skill {name} is protected but was not resolved as trusted.",
+                target=name,
+            )
+            continue
+
+        if skill is not None and skill.trust_status == "pending":
+            add_issue(
+                "tool_permission_broker",
+                "workspace-scan",
+                DECISION_REVIEW,
+                "Skill invocation requires review",
+                f"Skill {name} is still pending trust approval.",
                 target=name,
             )
             continue
@@ -498,6 +699,17 @@ def _apply_plugin_checks(
         if plugin is not None and plugin.trust_status == "trusted":
             continue
 
+        if is_protected:
+            add_issue(
+                "cross_plugin_handoff_guard",
+                "cross-plugin-proof",
+                DECISION_DENY,
+                "Protected plugin invocation was denied",
+                f"Plugin {name} is protected but was not resolved as trusted.",
+                target=name,
+            )
+            continue
+
         if plugin is not None and plugin.trust_status == "pending":
             add_issue(
                 "cross_plugin_handoff_guard",
@@ -508,16 +720,6 @@ def _apply_plugin_checks(
                 target=name,
             )
             continue
-
-        if is_protected:
-            add_issue(
-                "cross_plugin_handoff_guard",
-                "cross-plugin-proof",
-                DECISION_DENY,
-                "Protected plugin invocation was denied",
-                f"Plugin {name} is protected but was not resolved as trusted.",
-                target=name,
-            )
 
     source_plugin = payload["source_plugin"]
     target_plugin = payload["target_plugin"]
@@ -752,6 +954,88 @@ def _normalize_string_list(*values: Any) -> list[str]:
     return _dedupe_string_list(items)
 
 
+def _first_string(*values: Any) -> str:
+    for value in values:
+        normalized = _normalize_string_list(value)
+        if normalized:
+            return normalized[0]
+    return ""
+
+
+def _extract_structured_names(*values: Any, wanted_keys: set[str]) -> list[str]:
+    items: list[str] = []
+    for matched_value in _iter_named_values(*values, wanted_keys=wanted_keys):
+        items.extend(_flatten_structured_name_values(matched_value))
+    return _dedupe_string_list(items)
+
+
+def _collect_named_fields(*values: Any, wanted_keys: set[str]) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for key, matched_value in _iter_named_field_items(*values, wanted_keys=wanted_keys):
+        if key in fields:
+            continue
+        normalized_values = _normalize_string_list(_flatten_structured_name_values(matched_value), matched_value)
+        if normalized_values:
+            fields[key] = normalized_values[0]
+    return fields
+
+
+def _iter_named_values(*values: Any, wanted_keys: set[str]) -> list[Any]:
+    return [value for _, value in _iter_named_field_items(*values, wanted_keys=wanted_keys)]
+
+
+def _iter_named_field_items(*values: Any, wanted_keys: set[str], depth: int = 0, max_depth: int = 8) -> list[tuple[str, Any]]:
+    if depth > max_depth:
+        return []
+    matches: list[tuple[str, Any]] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            for raw_key, nested in value.items():
+                key = _normalize_payload_key(raw_key)
+                if key in wanted_keys:
+                    matches.append((key, nested))
+                matches.extend(_iter_named_field_items(nested, wanted_keys=wanted_keys, depth=depth + 1, max_depth=max_depth))
+            continue
+        if isinstance(value, (list, tuple, set)):
+            matches.extend(_iter_named_field_items(*list(value), wanted_keys=wanted_keys, depth=depth + 1, max_depth=max_depth))
+    return matches
+
+
+def _flatten_structured_name_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, (int, float, bool)):
+        return [str(value)]
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for nested in value:
+            items.extend(_flatten_structured_name_values(nested))
+        return items
+    if isinstance(value, dict):
+        items: list[str] = []
+        for raw_key, nested in value.items():
+            key = _normalize_payload_key(raw_key)
+            if key in GENERIC_NAME_KEYS:
+                items.extend(_flatten_structured_name_values(nested))
+        return items
+    return []
+
+
+def _normalize_payload_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"[^A-Za-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_").lower()
+
+
 def _dedupe_string_list(values: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -778,6 +1062,44 @@ def _matches_any_pattern(value: str, patterns: list[str]) -> bool:
     return False
 
 
+def _extract_paths_from_text_values(*values: Any) -> list[str]:
+    paths: list[str] = []
+    for text in _iter_text_path_fragments(*values):
+        for pattern in (WINDOWS_PATH_RE, UNIX_PATH_RE):
+            for match in pattern.finditer(text):
+                candidate = _clean_extracted_path(match.group(0))
+                if candidate:
+                    paths.append(candidate)
+    return _dedupe_string_list(paths)
+
+
+def _iter_text_path_fragments(*values: Any) -> list[str]:
+    fragments: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                fragments.append(stripped)
+            continue
+        if isinstance(value, (list, tuple, set)):
+            fragments.extend(_iter_text_path_fragments(*list(value)))
+            continue
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if str(key or "").strip().lower() in TEXT_PATH_CANDIDATE_KEYS:
+                    fragments.extend(_iter_text_path_fragments(nested))
+    return fragments
+
+
+def _clean_extracted_path(value: str) -> str:
+    text = str(value or "").strip().strip(PATH_TRAILING_CHARS)
+    while text.endswith("\\"):
+        text = text[:-1]
+    return text.strip().strip(PATH_TRAILING_CHARS)
+
+
 def _normalize_path(value: str | None) -> str:
     normalized = str(value or "").strip().replace("\\", "/")
     while "//" in normalized:
@@ -788,7 +1110,9 @@ def _normalize_path(value: str | None) -> str:
 def _path_is_within(target_path: str, protected_path: str) -> bool:
     target = _normalize_path(target_path)
     protected = _normalize_path(protected_path)
-    return target == protected or target.startswith(protected + "/")
+    target_key = target.casefold()
+    protected_key = protected.casefold()
+    return target_key == protected_key or target_key.startswith(protected_key + "/")
 
 
 def _is_path_whitelisted(

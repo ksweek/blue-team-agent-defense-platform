@@ -39,7 +39,7 @@ os.environ["AI_BASE_URL"] = "https://api.openai.com/v1"
 os.environ["AI_API_KEY"] = ""
 os.environ["AI_MODEL"] = ""
 os.environ["JWT_SECRET"] = "blue-team-audit-secret"
-os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = "admin123"
+os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = "admin_123"
 os.environ["BOOTSTRAP_ANALYST_PASSWORD"] = "analyst123"
 os.environ["APP_LOG_LEVEL"] = "WARNING"
 
@@ -392,7 +392,7 @@ def main() -> int:
             record_http("GET", "/health", status_code=health.status_code, note="plain health check passed")
 
             admin_login = unwrap_success(
-                client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+                client.post("/api/auth/login", json={"username": "admin", "password": "admin_123"})
             )
             analyst_login = unwrap_success(
                 client.post("/api/auth/login", json={"username": "analyst", "password": "analyst123"})

@@ -9,6 +9,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENT_GATEWAY_DIR = PROJECT_ROOT / "tools" / "agent_gateway"
 
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 if str(AGENT_GATEWAY_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_GATEWAY_DIR))
 
@@ -24,7 +26,7 @@ def test_request_activation_clears_platform_password_and_syncs_ai_binding(
         "platform": {
             "base_url": "http://127.0.0.1:8000",
             "username": "admin",
-            "password": "admin123",
+            "password": "admin_123",
             "verify_tls": True,
         },
         "runtime": {
@@ -156,3 +158,9 @@ def test_issue_activation_code_updates_runtime_state(
     assert updated["runtime"]["status"] == "activation_issued"
     assert saved["runtime"]["activation_code_hint"] == "AB****34"
     assert saved["runtime"]["ai_endpoint_key"] == "gateway-prod"
+
+
+if __name__ == "__main__":
+    from backend.tests.run_backend_tests_cn import main as run_cn_tests
+
+    raise SystemExit(run_cn_tests([str(Path(__file__).resolve())]))

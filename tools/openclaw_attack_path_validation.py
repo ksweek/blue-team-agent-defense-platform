@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUN_LOG_DIR = PROJECT_ROOT / "run_logs"
 CONNECT_SCRIPT = PROJECT_ROOT / "tools" / "openclaw_control_connect.py"
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
+ADMIN_PASSWORD = "admin_123"
 
 
 def now_text() -> str:

@@ -199,18 +199,6 @@ const railItems = computed(() => {
   if (!selectedEndpoint.value) {
     return [
       {
-        label: '接入协议',
-        value: targetTypeLabel(),
-        tone: 'info' as Tone,
-        meta: '先填写上游信息',
-      },
-      {
-        label: '默认路由',
-        value: form.is_default ? '准备设置' : '未启用',
-        tone: form.is_default ? ('safe' as Tone) : ('info' as Tone),
-        meta: '创建成功后立即生效',
-      },
-      {
         label: 'Runtime',
         value: '0',
         tone: 'info' as Tone,
@@ -225,32 +213,7 @@ const railItems = computed(() => {
     ]
   }
 
-  return [
-    {
-      label: '接入协议',
-        value: targetTypeLabel(selectedEndpoint.value),
-      tone: 'info' as Tone,
-        meta: connectionModeLabel(selectedEndpoint.value.connection_mode),
-    },
-    {
-      label: '默认路由',
-      value: selectedEndpoint.value.is_default ? '已启用' : '未启用',
-      tone: selectedEndpoint.value.is_default ? ('safe' as Tone) : ('info' as Tone),
-      meta: selectedEndpoint.value.endpoint_group,
-    },
-    {
-      label: 'Runtime',
-      value: String(selectedEndpoint.value.usage_summary.runtime_count),
-      tone: selectedEndpoint.value.usage_summary.runtime_online_count ? ('safe' as Tone) : ('warn' as Tone),
-      meta: `在线 ${selectedEndpoint.value.usage_summary.runtime_online_count}`,
-    },
-    {
-      label: '注册码',
-      value: String(selectedEndpoint.value.usage_summary.token_count),
-      tone: selectedEndpoint.value.usage_summary.token_count ? ('warn' as Tone) : ('info' as Tone),
-      meta: selectedEndpoint.value.usage_summary.last_runtime_seen_at || '暂无最近心跳',
-    },
-  ]
+  return []
 })
 
 const pageTitle = computed(() =>
@@ -278,7 +241,6 @@ const statusTone = computed<Tone>(() => {
   if (syncState.value === 'error') return 'danger'
   return selectedEndpoint.value ? endpointTone(selectedEndpoint.value) : 'info'
 })
-
 watch(
   () => [route.name, route.params.endpointId] as const,
   () => {
@@ -1002,6 +964,17 @@ function bindingStateLabel(item: { binding_state?: string | null }) {
 function bindingStateTone(item: { binding_state?: string | null }): Tone {
   return item.binding_state === 'bound' ? 'safe' : 'info'
 }
+
+function endpointRuntimeAttentionCount(item: AiEndpointItem) {
+  return item.usage_summary.runtime_pending_count
+}
+
+function scrollToElement(elementId: string) {
+  if (typeof document === 'undefined') {
+    return
+  }
+  document.getElementById(elementId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 </script>
 
 <template>
@@ -1028,18 +1001,18 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
         <strong>{{ selectedEndpoint ? `当前目标：${selectedEndpoint.display_name}` : '先创建目标，再绑定客户端与注册码' }}</strong>
       </div>
 
-      <div class="ai-route-metrics">
+      <div v-if="!selectedEndpoint" class="ai-route-metrics">
         <article class="ai-route-metric">
-          <span>{{ selectedEndpoint ? '已绑定 Runtime' : '目标状态' }}</span>
-          <strong>{{ selectedEndpoint ? selectedEndpointRuntimes.length : '待创建' }}</strong>
+          <span>目标状态</span>
+          <strong>待创建</strong>
         </article>
         <article class="ai-route-metric">
-          <span>{{ selectedEndpoint ? '已绑定注册码' : '默认路由' }}</span>
-          <strong>{{ selectedEndpoint ? selectedEndpointTokens.length : form.is_default ? '准备启用' : '未启用' }}</strong>
+          <span>默认路由</span>
+          <strong>{{ form.is_default ? '准备启用' : '未启用' }}</strong>
         </article>
         <article class="ai-route-metric">
-          <span>{{ selectedEndpoint ? '防护模式' : '接入协议' }}</span>
-          <strong>{{ selectedEndpoint ? PROTECTION_MODE_LABELS[selectedEndpoint.protection_mode] : targetTypeLabel() }}</strong>
+          <span>接入协议</span>
+          <strong>{{ targetTypeLabel() }}</strong>
         </article>
       </div>
 
@@ -1059,6 +1032,49 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
       </div>
     </section>
 
+    <section v-if="selectedEndpoint" class="endpoint-governance-overview">
+      <div class="endpoint-governance-summary">
+        <div class="endpoint-governance-title-block">
+          <p class="panel-kicker">单目标治理</p>
+          <h3>{{ selectedEndpoint.display_name }}</h3>
+          <span>{{ endpointMetaText(selectedEndpoint) }}</span>
+        </div>
+
+        <div class="endpoint-governance-state">
+          <StatusPill :label="endpointStatusLabel(selectedEndpoint)" :tone="endpointTone(selectedEndpoint)" />
+          <span>{{ targetTypeLabel(selectedEndpoint) }}</span>
+        </div>
+
+        <div class="endpoint-governance-online-badge">
+          <span>在线 Runtime</span>
+          <strong>{{ selectedEndpoint.usage_summary.runtime_online_count }}</strong>
+        </div>
+
+        <div class="endpoint-governance-primary-actions">
+          <button class="primary-button small" type="button" :disabled="isBusy" @click="createRuntimeToken">
+            生成激活码
+          </button>
+          <button class="ghost-button small" type="button" :disabled="isBusy" @click="testCurrentEndpoint">
+            测试连通
+          </button>
+        </div>
+      </div>
+
+      <div class="endpoint-governance-nav">
+        <span>治理入口</span>
+        <div class="endpoint-governance-nav-actions">
+          <button class="ghost-button small" type="button" :disabled="isBusy" @click="scrollToElement('endpoint-access-config')">
+            接入配置
+          </button>
+          <button class="ghost-button small" type="button" @click="scrollToElement('endpoint-policy-sections')">
+            Skill / 目录 / 研判
+          </button>
+          <RouterLink class="ghost-button small" :to="mcpPolicyRoute">MCP 策略</RouterLink>
+          <RouterLink class="ghost-button small" :to="attackTestingRoute">攻击测试</RouterLink>
+        </div>
+      </div>
+    </section>
+
     <div class="endpoint-config-layout">
       <div class="endpoint-config-main">
         <section v-if="loading && !createMode && !selectedEndpoint" class="endpoint-config-surface">
@@ -1067,7 +1083,7 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
           </div>
         </section>
 
-        <section v-else-if="createMode || selectedEndpoint" class="endpoint-config-surface">
+        <section v-else-if="createMode || selectedEndpoint" id="endpoint-access-config" class="endpoint-config-surface">
           <div class="endpoint-config-header">
             <div class="endpoint-config-header-copy">
               <p class="panel-kicker">{{ createMode ? '新增目标' : '专属配置' }}</p>
@@ -1098,7 +1114,7 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
           </div>
         </section>
 
-        <template v-if="selectedEndpoint">
+        <div v-if="selectedEndpoint" id="endpoint-policy-sections" class="endpoint-policy-sections">
           <PageSection eyebrow="研判" title="辅助研判" tag="独立接口" tone="warn">
             <div class="endpoint-governance-panel">
               <div class="endpoint-governance-row">
@@ -1322,72 +1338,6 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
             </div>
           </PageSection>
 
-          <PageSection eyebrow="Runtime" title="已绑定 Runtime" :tag="`${selectedEndpointRuntimes.length} 项`" tone="warn" collapsible :defaultCollapsed="true">
-            <div v-if="!selectedEndpointRuntimes.length" class="empty-state">
-              <p>这个目标下还没有已绑定 Runtime。</p>
-            </div>
-            <div v-else class="endpoint-detail-list">
-              <article v-for="item in selectedEndpointRuntimes" :key="item.id" class="endpoint-detail-row">
-                <div class="endpoint-detail-main">
-                  <div class="endpoint-detail-head">
-                    <strong>{{ item.display_name }}</strong>
-                    <div class="sample-preview-tags">
-                      <StatusPill :label="runtimeStatusLabel(item)" :tone="runtimeStatusTone(item)" />
-                      <StatusPill :label="item.is_online ? '在线' : '离线'" :tone="item.is_online ? 'safe' : 'info'" />
-                    </div>
-                  </div>
-                  <p>{{ item.status_summary }} / {{ item.hostname || '未上报主机名' }}</p>
-                  <div class="endpoint-detail-meta">
-                    <span>{{ item.runtime_type }}</span>
-                    <span>{{ item.last_seen_at || '暂无心跳' }}</span>
-                    <span>{{ item.ip_addresses.join(' / ') || '无 IP' }}</span>
-                  </div>
-                </div>
-                <div class="endpoint-detail-actions">
-                  <button
-                    v-if="item.status === 'activation_requested' || item.status === 'activation_issued'"
-                    class="ghost-button small"
-                    type="button"
-                    :disabled="isBusy"
-                    @click="issueActivationCode(item)"
-                  >
-                    {{ item.status === 'activation_issued' ? '重发激活码' : '签发激活码' }}
-                  </button>
-                  <button
-                    v-if="item.status === 'pending' || item.status === 'approved'"
-                    class="ghost-button small"
-                    type="button"
-                    :disabled="isBusy"
-                    @click="approveRuntime(item)"
-                  >
-                    批准
-                  </button>
-                  <button class="ghost-button small" type="button" :disabled="isBusy" @click="unbindRuntime(item)">
-                    解绑
-                  </button>
-                  <button
-                    v-if="item.status === 'pending' || item.status === 'approved'"
-                    class="ghost-button small"
-                    type="button"
-                    :disabled="isBusy"
-                    @click="rejectRuntime(item)"
-                  >
-                    拒绝
-                  </button>
-                  <button
-                    v-else
-                    class="ghost-button small"
-                    type="button"
-                    :disabled="isBusy"
-                    @click="revokeRuntime(item)"
-                  >
-                    撤销
-                  </button>
-                </div>
-              </article>
-            </div>
-          </PageSection>
-
           <PageSection eyebrow="注册码" title="已绑定注册码" :tag="`${selectedEndpointTokens.length} 项`" tone="info" collapsible :defaultCollapsed="true">
             <div v-if="!selectedEndpointTokens.length" class="empty-state">
               <p>这个目标下还没有已绑定注册码。</p>
@@ -1416,109 +1366,6 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
                   </button>
                 </div>
               </article>
-            </div>
-          </PageSection>
-
-          <PageSection eyebrow="待处理" title="未绑定对象" :tag="`${unboundRuntimes.length + unboundTokens.length} 项`" tone="warn" collapsible :defaultCollapsed="true">
-            <div class="endpoint-subsection">
-              <div class="endpoint-subsection-head">
-                <h4>未绑定 Runtime</h4>
-                <span>{{ unboundRuntimes.length }} 项</span>
-              </div>
-              <div v-if="!unboundRuntimes.length" class="token-empty">没有未绑定 Runtime。</div>
-              <div v-else class="endpoint-detail-list">
-                <article v-for="item in unboundRuntimes" :key="item.id" class="endpoint-detail-row">
-                  <div class="endpoint-detail-main">
-                    <div class="endpoint-detail-head">
-                      <strong>{{ item.display_name }}</strong>
-                      <div class="sample-preview-tags">
-                        <StatusPill :label="runtimeStatusLabel(item)" :tone="runtimeStatusTone(item)" />
-                        <StatusPill :label="bindingStateLabel(item)" :tone="bindingStateTone(item)" />
-                      </div>
-                    </div>
-                    <p>{{ item.status_summary }} / {{ item.hostname || '未上报主机名' }}</p>
-                    <div class="endpoint-detail-meta">
-                      <span>{{ item.runtime_type }}</span>
-                      <span>{{ item.last_seen_at || '暂无心跳' }}</span>
-                      <span>{{ item.ip_addresses.join(' / ') || '无 IP' }}</span>
-                    </div>
-                  </div>
-                  <div class="endpoint-detail-actions">
-                    <button
-                      v-if="item.status === 'activation_requested' || item.status === 'activation_issued'"
-                      class="ghost-button small"
-                      type="button"
-                      :disabled="isBusy"
-                      @click="issueActivationCode(item)"
-                    >
-                      {{ item.status === 'activation_issued' ? '重发激活码' : '签发激活码' }}
-                    </button>
-                    <button class="ghost-button small" type="button" :disabled="isBusy" @click="bindRuntimeToSelected(item)">
-                      绑定到当前
-                    </button>
-                    <button
-                      v-if="item.status === 'pending' || item.status === 'approved'"
-                      class="ghost-button small"
-                      type="button"
-                      :disabled="isBusy"
-                      @click="approveAndBindRuntime(item)"
-                    >
-                      绑定并批准
-                    </button>
-                    <button
-                      v-if="item.status === 'pending' || item.status === 'approved'"
-                      class="ghost-button small"
-                      type="button"
-                      :disabled="isBusy"
-                      @click="rejectRuntime(item)"
-                    >
-                      拒绝
-                    </button>
-                    <button
-                      v-else
-                      class="ghost-button small"
-                      type="button"
-                      :disabled="isBusy"
-                      @click="revokeRuntime(item)"
-                    >
-                      撤销
-                    </button>
-                  </div>
-                </article>
-              </div>
-            </div>
-
-            <div class="endpoint-subsection">
-              <div class="endpoint-subsection-head">
-                <h4>未绑定注册码</h4>
-                <span>{{ unboundTokens.length }} 项</span>
-              </div>
-              <div v-if="!unboundTokens.length" class="token-empty">没有未绑定注册码。</div>
-              <div v-else class="endpoint-detail-list">
-                <article v-for="item in unboundTokens" :key="item.id" class="endpoint-detail-row">
-                  <div class="endpoint-detail-main">
-                    <div class="endpoint-detail-head">
-                      <strong>{{ item.token_label }}</strong>
-                      <div class="sample-preview-tags">
-                        <StatusPill :label="tokenStatusLabel(item)" :tone="tokenStatusTone(item)" />
-                        <StatusPill :label="bindingStateLabel(item)" :tone="bindingStateTone(item)" />
-                      </div>
-                    </div>
-                    <p>{{ item.runtime_type }} / {{ tokenSecretHint(item) }}</p>
-                    <div class="endpoint-detail-meta">
-                      <span>{{ tokenDeliveryLabel(item) }}</span>
-                      <span>可用 {{ item.remaining_uses }}</span>
-                      <span>已用 {{ item.used_count }}</span>
-                      <span>{{ item.expires_at || '不过期' }}</span>
-                    </div>
-                  </div>
-                  <div class="endpoint-detail-actions">
-                    <button class="ghost-button small" type="button" :disabled="isBusy" @click="bindTokenToSelected(item)">
-                      绑定到当前
-                    </button>
-                  </div>
-                </article>
-              </div>
             </div>
           </PageSection>
 
@@ -1555,7 +1402,7 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
                   </div>
                   <p class="settings-snapshot-value">
                     <button class="ghost-button small" type="button" @click="copyText(selectedEndpointIntegration.gateway_base_path, '已复制 HTTP 入口')">
-                      {{ selectedEndpointIntegration.gateway_base_path }}
+                      {{ redactSensitiveText(selectedEndpointIntegration.gateway_base_path) }}
                     </button>
                   </p>
                 </div>
@@ -1566,7 +1413,7 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
                   </div>
                   <p class="settings-snapshot-value">
                     <button class="ghost-button small" type="button" @click="copyText(selectedEndpointIntegration.gateway_ws_base_path, '已复制 WebSocket 入口')">
-                      {{ selectedEndpointIntegration.gateway_ws_base_path }}
+                      {{ redactSensitiveText(selectedEndpointIntegration.gateway_ws_base_path) }}
                     </button>
                   </p>
                 </div>
@@ -1586,7 +1433,7 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
                       <strong>{{ selector.label }}</strong>
                     </div>
                     <button class="ghost-button small" type="button" @click="copyText(selector.value, `已复制 ${selector.label}`)">
-                      {{ selector.value }}
+                      {{ redactSensitiveText(selector.value) }}
                     </button>
                   </article>
                 </section>
@@ -1625,7 +1472,7 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
               </div>
             </div>
           </PageSection>
-        </template>
+        </div>
       </div>
 
       <aside class="endpoint-config-side">
@@ -1646,35 +1493,11 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
               </div>
               <div class="endpoint-table-meta">
                 <span>{{ selectedEndpoint.endpoint_group }}</span>
-                <span>{{ targetTypeLabel(selectedEndpoint) }}</span>
                 <span>{{ selectedEndpoint.usage_summary.runtime_count }} Runtime</span>
               </div>
             </div>
 
             <div class="settings-snapshot-list">
-              <div class="settings-snapshot-row">
-                <div class="settings-snapshot-copy">
-                  <h4>接入协议</h4>
-                </div>
-                <p class="settings-snapshot-value">{{ targetTypeLabel(selectedEndpoint) }}</p>
-              </div>
-
-              <div class="settings-snapshot-row">
-                <div class="settings-snapshot-copy">
-                  <h4>防护模式</h4>
-                </div>
-                <p class="settings-snapshot-value">{{ PROTECTION_MODE_LABELS[selectedEndpoint.protection_mode] }}</p>
-              </div>
-
-              <div class="settings-snapshot-row">
-                <div class="settings-snapshot-copy">
-                  <h4>上游地址</h4>
-                </div>
-                <p class="settings-snapshot-value">
-                  {{ selectedEndpoint.is_default ? '默认路由' : '普通路由' }}
-                </p>
-              </div>
-
               <div class="settings-snapshot-row">
                 <div class="settings-snapshot-copy">
                   <h4>最近心跳</h4>
@@ -1685,7 +1508,7 @@ function bindingStateTone(item: { binding_state?: string | null }): Tone {
             </div>
           </div>
           <div v-else class="empty-state">
-            <p>创建完成后，这里会显示当前目标的接入状态、路由角色和客户端数量。</p>
+            <p>创建完成后，这里会显示当前目标的运行态信息和客户端数量。</p>
           </div>
         </PageSection>
 

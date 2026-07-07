@@ -58,6 +58,10 @@
 - 受保护路径 / 技能 / 插件治理
 - 任务执行闭环
 - 安全事件与报告归档
+- 样本目录 API 与“样本执行”页面
+- 单条 / 批量样本建任务
+- 批量报告下载
+- Gateway、Runtime 与 MCP Ticket 联调入口
 
 当前最值得优先跑的样本类别是：
 
@@ -125,24 +129,44 @@
 
 ## 4. 当前怎么接到这个项目里
 
-### 方式一：手工挑样本，用 API 创建任务
+### 方式一：在“样本执行”页面中选择样本
+
+适合：
+
+- 快速筛选章节包、专项包、风险等级和测试模式
+- 批量创建任务或批量执行
+- 查看任务、事件、报告并下载整批报告
+
+推荐流程：
+
+1. 登录前端
+2. 打开“样本执行”页面
+3. 按章节、专项包、风险等级、测试模式筛选样本
+4. 勾选一条或多条样本
+5. 选择目标 Agent / AI 目标
+6. 点击“批量建任务”或“批量执行”
+7. 查看任务状态、事件、报告，必要时下载整批报告
+
+### 方式二：通过样本 API 创建任务
 
 适合：
 
 - 单条验证
 - 问题复现
-- 观察具体行为
+- 外部回归工具集成
 
-推荐流程：
+核心接口：
 
-1. 从章节包里挑一条样本
-2. 提取 `title / attack_family / content / expected_behavior`
-3. 调 `POST /api/attack-tasks`
-4. 再调 `POST /api/attack-tasks/{id}/run`
-5. 轮询 `GET /api/attack-tasks/{id}`
-6. 查看 `GET /api/security-events` 和 `GET /api/reports`
+- `GET /api/samples/summary`
+- `GET /api/samples/sections`
+- `GET /api/samples/packs`
+- `GET /api/samples`
+- `GET /api/samples/{sample_id}`
+- `POST /api/attack-tasks/from-sample`
+- `POST /api/attack-tasks/batch-from-samples`
+- `POST /api/reports/batch-download`
 
-### 方式二：外部脚本批量读 JSONL
+### 方式三：外部脚本批量读 JSONL
 
 适合：
 
@@ -153,12 +177,12 @@
 建议脚本行为：
 
 1. 读取 `.jsonl`
-2. 逐条创建任务
+2. 优先调用 `/api/attack-tasks/from-sample` 或 `/api/attack-tasks/batch-from-samples`
 3. 按 `test_mode` 决定单轮还是多轮执行
 4. 收集任务状态、事件、报告
 5. 输出阻断率、失败率、误报率
 
-### 方式三：把样本喂给你的 Agent Runtime，再把结果回写平台
+### 方式四：把样本喂给你的 Agent Runtime，再把结果回写平台
 
 适合：
 
@@ -262,17 +286,18 @@ JSONL 样本
 
 ## 8. 当前样本库和平台之间的现实边界
 
-- 平台已经能执行任务并归档结果，但还没有专门的“样本选择页”
-- 当前样本库更适合通过脚本或自定义任务 API 接入
-- 多轮样本需要状态化 Runner 支持；平台本身不替代你的会话编排器
-- `skill_scan` 是当前平台里现成的 UI 入口，但不等于通用样本执行器
+- 平台已经能通过页面和 API 读取样本、创建任务、批量执行并归档报告。
+- 样本执行页适合日常联调和中小批量回归；大规模长期回归仍建议配合外部脚本或 CI 调度。
+- 多轮样本需要状态化 Runner 支持；平台可以记录任务和报告，但不完全替代业务侧会话编排器。
+- Gateway 与 Runtime 已能接入在线请求和外部执行器；生产级长连接治理、队列 HA 和多租户隔离仍需继续补齐。
+- 本地 SQLite 在高并发写入时可能出现锁竞争，批量压测建议使用 PostgreSQL + Redis。
 
 ## 9. 当前最值得继续补的方向
 
-1. 增加样本目录 API，把 `curated` 目录变成平台内可选数据源。
-2. 增加批量任务执行和回归报告页。
-3. 增加针对 `single_turn / multi_turn` 的原生 Runner 适配层。
-4. 增加样本执行结果对比视图，支持按模型、Provider、策略版本做横向比较。
+1. 增加针对 `single_turn / multi_turn` 的原生 Runner 适配层。
+2. 增加样本执行结果对比视图，支持按模型、Provider、策略版本做横向比较。
+3. 增加回归统计看板，沉淀阻断率、误报率、敏感输出命中率和成本/延迟趋势。
+4. 增加大批量回归的队列治理，包括超时回收、死信队列、失败重试和并发限速。
 
 ## 10. 相关文件
 

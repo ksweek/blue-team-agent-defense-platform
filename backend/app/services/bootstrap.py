@@ -51,7 +51,7 @@ from .seed import (
     tasks,
     users,
 )
-from .security import hash_password
+from .security import hash_password, verify_password
 from .system_settings_registry import default_system_settings
 
 
@@ -70,6 +70,14 @@ def validate_runtime_configuration(*, role: str) -> None:
         issues.append("JWT_SECRET is still using the development default")
     if settings.gateway_api_token == DEFAULT_SERVICE_TOKEN:
         issues.append("GATEWAY_API_TOKEN is still using the development default")
+    if settings.expose_internal_error_details:
+        issues.append("EXPOSE_INTERNAL_ERROR_DETAILS must be false in production")
+    if "*" in settings.trusted_hosts:
+        issues.append("TRUSTED_HOSTS must not contain wildcard `*` in production")
+    if "*" in settings.cors_origins:
+        issues.append("CORS_ORIGINS must not contain wildcard `*` in production")
+    if settings.cors_origin_regex and "localhost" in settings.cors_origin_regex:
+        issues.append("CORS_ORIGIN_REGEX still allows localhost in production")
     if settings.bootstrap_mode != "validate":
         issues.append("BOOTSTRAP_MODE must be validate for runtime processes in production")
     if settings.bootstrap_admin_password == DEFAULT_BOOTSTRAP_ADMIN_PASSWORD:
@@ -255,6 +263,7 @@ def _normalize_level(value: str | None) -> str:
 
 def _seed_users(db) -> None:
     if db.query(User.id).first() is not None:
+        _migrate_local_demo_admin_password(db)
         return
 
     password_map = {
@@ -272,6 +281,17 @@ def _seed_users(db) -> None:
         )
         user.set_roles(item["roles"])
         db.add(user)
+
+
+def _migrate_local_demo_admin_password(db) -> None:
+    if settings.is_production or settings.bootstrap_admin_password != DEFAULT_BOOTSTRAP_ADMIN_PASSWORD:
+        return
+
+    admin_user = db.query(User).filter(User.username == "admin").first()
+    if admin_user is None:
+        return
+    if verify_password("admin123", admin_user.password_hash):
+        admin_user.password_hash = hash_password(settings.bootstrap_admin_password)
 
 
 def _seed_defense_configs(db) -> None:

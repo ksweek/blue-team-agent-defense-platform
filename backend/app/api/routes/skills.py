@@ -18,6 +18,7 @@ from ...schemas.skill import (
 )
 from ...services.audit import append_audit_log
 from ...services.authorization import require_roles
+from ...services.cache import cached_payload, invalidate_cache_namespaces
 from ...services.endpoint_governance import assign_skills_to_endpoint, get_endpoint_skill_ids
 from ...services.repository import contains_keyword, paginate
 from ...services.skill_scan import describe_skill_source, serialize_skill_scan_source
@@ -29,6 +30,10 @@ from ...services.skill_registry import (
 from ...services.time_utils import format_beijing, utc_now
 
 router = APIRouter()
+
+
+def _invalidate_skill_cache() -> None:
+    invalidate_cache_namespaces("skills", "attack_tasks", "dashboard", "ai_endpoints")
 
 
 SOURCE_PATH_FIELD_META = {
@@ -556,42 +561,42 @@ def list_skills(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    endpoint = _get_ai_endpoint_or_404(db, ai_endpoint_id) if ai_endpoint_id is not None else None
-    scoped_skill_ids = set(get_endpoint_skill_ids(endpoint)) if endpoint is not None else set()
-    items = [
-        _serialize_skill(item)
-        for item in db.query(Skill).order_by(Skill.created_at.desc(), Skill.id.desc()).all()
-        if endpoint is None or item.id in scoped_skill_ids
-    ]
-    scan_tasks = (
-        db.query(AttackTask)
-        .filter(AttackTask.attack_type == "skill_scan")
-        .order_by(AttackTask.created_at.desc(), AttackTask.id.desc())
-        .all()
-    )
-    if endpoint is not None:
-        scan_tasks = [item for item in scan_tasks if _task_ai_endpoint_id(item) == endpoint.id]
-
-    if trust_status:
-        items = [item for item in items if item["trust_status"] == trust_status]
-    if provider:
-        items = [item for item in items if item["provider"] == provider]
-    if keyword:
+    def load_payload() -> dict:
+        endpoint = _get_ai_endpoint_or_404(db, ai_endpoint_id) if ai_endpoint_id is not None else None
+        scoped_skill_ids = set(get_endpoint_skill_ids(endpoint)) if endpoint is not None else set()
         items = [
-            item
-            for item in items
-            if contains_keyword(item, keyword, ["skill_name", "skill_type", "provider", "source_path", "trust_status"])
+            _serialize_skill(item)
+            for item in db.query(Skill).order_by(Skill.created_at.desc(), Skill.id.desc()).all()
+            if endpoint is None or item.id in scoped_skill_ids
         ]
+        scan_tasks = (
+            db.query(AttackTask)
+            .filter(AttackTask.attack_type == "skill_scan")
+            .order_by(AttackTask.created_at.desc(), AttackTask.id.desc())
+            .all()
+        )
+        if endpoint is not None:
+            scan_tasks = [item for item in scan_tasks if _task_ai_endpoint_id(item) == endpoint.id]
 
-    paginated_skills = paginate(items, page=page, page_size=page_size)
-    scan_task_result_list = _build_scan_task_result_list(
-        scan_tasks,
-        page=scan_task_page,
-        page_size=scan_task_page_size,
-    )
+        if trust_status:
+            items = [item for item in items if item["trust_status"] == trust_status]
+        if provider:
+            items = [item for item in items if item["provider"] == provider]
+        if keyword:
+            items = [
+                item
+                for item in items
+                if contains_keyword(item, keyword, ["skill_name", "skill_type", "provider", "source_path", "trust_status"])
+            ]
 
-    return success(
-        {
+        paginated_skills = paginate(items, page=page, page_size=page_size)
+        scan_task_result_list = _build_scan_task_result_list(
+            scan_tasks,
+            page=scan_task_page,
+            page_size=scan_task_page_size,
+        )
+
+        return {
             **paginated_skills,
             "intake_meta": {
                 "create_skill": CREATE_SKILL_META,
@@ -616,6 +621,24 @@ def list_skills(
                 ],
             },
         }
+
+    return success(
+        cached_payload(
+            "skills",
+            key_parts={
+                "route": "list",
+                "page": page,
+                "page_size": page_size,
+                "scan_task_page": scan_task_page,
+                "scan_task_page_size": scan_task_page_size,
+                "trust_status": trust_status,
+                "provider": provider,
+                "keyword": keyword,
+                "ai_endpoint_id": ai_endpoint_id,
+            },
+            loader=load_payload,
+            ttl_seconds=5,
+        )
     )
 
 
@@ -645,6 +668,7 @@ def create_skill(
     )
     db.commit()
     db.refresh(skill)
+    _invalidate_skill_cache()
     return success(_serialize_skill(skill), message="created" if created else "updated")
 
 
@@ -680,6 +704,7 @@ def import_skill_directory(
     db.commit()
     for item in imported_items:
         db.refresh(item)
+    _invalidate_skill_cache()
 
     return success(
         {
@@ -786,6 +811,7 @@ def scan_skills(
     )
     db.commit()
     db.refresh(task)
+    _invalidate_skill_cache()
     return success(_serialize_task(task), message="scan queued")
 
 
@@ -811,6 +837,7 @@ def update_skill_trust_status(
     append_audit_log(db, current_user, "skills", "update-trust", f"updated skill {item.skill_name}")
     db.commit()
     db.refresh(item)
+    _invalidate_skill_cache()
     return success(_serialize_skill(item), message="updated")
 
 
@@ -826,4 +853,5 @@ def update_skill_source_path(
     append_audit_log(db, current_user, "skills", "update-source-path", f"updated source path for {item.skill_name}")
     db.commit()
     db.refresh(item)
+    _invalidate_skill_cache()
     return success(_serialize_skill(item), message="updated")

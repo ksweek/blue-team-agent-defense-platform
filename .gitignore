@@ -42,6 +42,7 @@ frontend/dist-ssr/
 
 # Runtime outputs
 run_logs/
+release/
 backend/data/*.db
 backend/data/*.db-*
 backend/data/*.sqlite
@@ -69,6 +70,17 @@ tmp/
 temp/
 *.tmp
 *.bak
+
+# Local presentation / generated media workspaces
+pic/gen_gpt_image2.py
+pic/*prompt*.txt
+pic/__pycache__/
+scripts/generate_*
+ppt/
+ppt_ai_animation/
+file/
+商业计划书格式要求/
+*.pdf
 
 # OS / editor
 .DS_Store

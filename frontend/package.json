@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "display:dev": "vite --config vite.display.config.ts",
     "build": "vue-tsc --noEmit && vite build",
+    "display:build": "vite build --config vite.display.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {

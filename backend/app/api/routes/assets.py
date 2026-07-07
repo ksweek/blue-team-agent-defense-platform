@@ -1,6 +1,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.response import success
@@ -122,18 +123,37 @@ def list_assets(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    items = [_serialize_asset(item) for item in db.query(Asset).order_by(Asset.id).all()]
-
+    query = db.query(Asset)
     if asset_type:
-        items = [item for item in items if item["asset_type"] == asset_type]
+        query = query.filter(Asset.asset_type == asset_type)
     if risk_level:
-        items = [item for item in items if item["risk_level"] == risk_level]
+        query = query.filter(Asset.risk_level == risk_level)
     if status:
-        items = [item for item in items if item["status"] == status]
+        query = query.filter(Asset.status == status)
     if keyword:
-        items = [item for item in items if contains_keyword(item, keyword, ["asset_name", "asset_path", "asset_type"])]
-
-    return success(paginate(items, page=page, page_size=page_size))
+        search = f"%{keyword.strip()}%"
+        query = query.filter(
+            or_(
+                Asset.asset_name.ilike(search),
+                Asset.asset_path.ilike(search),
+                Asset.asset_type.ilike(search),
+            )
+        )
+    total = query.count()
+    items = (
+        query.order_by(Asset.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return success(
+        {
+            "items": [_serialize_asset(item) for item in items],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @router.post("")
@@ -179,11 +199,22 @@ def list_asset_whitelists(
     _: User = Depends(require_roles("admin", "analyst")),
 ):
     _get_asset_or_404(db, asset_id)
-    data = db.query(AssetWhitelist).filter(AssetWhitelist.asset_id == asset_id).order_by(AssetWhitelist.id.desc()).all()
-    items = [_serialize_whitelist(item) for item in data]
+    query = db.query(AssetWhitelist).filter(AssetWhitelist.asset_id == asset_id)
     if whitelist_type:
-        items = [item for item in items if item["whitelist_type"] == whitelist_type]
-    response = paginate(items, page=page, page_size=page_size)
+        query = query.filter(AssetWhitelist.whitelist_type == whitelist_type)
+    total = query.count()
+    items = (
+        query.order_by(AssetWhitelist.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    response = {
+        "items": [_serialize_whitelist(item) for item in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
     response["field_meta"] = ASSET_WHITELIST_FIELD_META
     return success(response)
 

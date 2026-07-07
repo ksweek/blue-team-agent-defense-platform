@@ -1,0 +1,11 @@
+@echo off
+rem Copy this file to openclaw_connect_config.cmd, then edit values for demos.
+rem The launcher loads openclaw_connect_config.cmd automatically when it exists.
+
+set "PLATFORM_BASE_URL=http://127.0.0.1:8000"
+set "OPENCLAW_URL=http://192.168.137.140:18789"
+set "OPENCLAW_GATEWAY_TOKEN=replace-with-openclaw-gateway-token"
+set "OPENCLAW_ACTIVATION_CODE=replace-with-platform-activation-code"
+set "OPENCLAW_LISTEN_HOST=0.0.0.0"
+set "OPENCLAW_LISTEN_PORT=19090"
+set "OPENCLAW_ACCESS_HOST=127.0.0.1"

@@ -4,6 +4,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.response import success
@@ -148,13 +149,34 @@ def list_users(
     status: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    items = [_serialize_user(item) for item in db.query(User).order_by(User.id).all()]
-    if keyword:
-        items = [item for item in items if contains_keyword(item, keyword, ["username", "real_name", "email"])]
+    query = db.query(User)
     if status:
         normalized_status = _normalize_status(status)
-        items = [item for item in items if item["status"] == normalized_status]
-    return success(paginate(items, page=page, page_size=page_size))
+        query = query.filter(User.status == normalized_status)
+    if keyword:
+        search = f"%{keyword.strip()}%"
+        query = query.filter(
+            or_(
+                User.username.ilike(search),
+                User.real_name.ilike(search),
+                User.email.ilike(search),
+            )
+        )
+    total = query.count()
+    items = (
+        query.order_by(User.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return success(
+        {
+            "items": [_serialize_user(item) for item in items],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @router.get("/{user_id}")

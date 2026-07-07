@@ -13,7 +13,7 @@ import {
   type SensitiveFindingItem
 } from '../services/api'
 import { buildAttackSummary } from '../services/attackSummary'
-import { eventStatusLabel, eventStatusTone } from '../services/eventStatus'
+import { eventStatusLabel, eventStatusTone, normalizeEventStatus } from '../services/eventStatus'
 import { buildRawHighlightSectionViews, buildRawLocationKey } from '../services/rawHighlight'
 import { redactSensitiveText } from '../services/redaction'
 
@@ -31,6 +31,16 @@ type PayloadSection = {
   tone: Tone
   items: SecurityReportPayloadItem[]
   summary: string
+}
+type AiReviewView = {
+  statusLabel: string
+  statusTone: Tone
+  opinionLabel: string
+  opinionTone: Tone
+  summary: string
+  detail: string
+  adjustments: string[]
+  error: string
 }
 
 const CONTROL_LABELS: Record<string, string> = {
@@ -120,6 +130,7 @@ const REPORT_SUMMARY_LABELS: Record<string, string> = {
   ai_endpoint_protection: '保护模式',
   ai_review_mode: '研判模式',
   ai_review_invoked: '是否触发研判',
+  ai_review_status: 'AI复核状态',
   review_decision: '复核结论',
   rule_verdict: '规则判定',
   authorization_decision: '授权决策',
@@ -187,6 +198,9 @@ const attackSummary = computed(() =>
     hitRules: data.value?.event.hit_rules ?? [],
     guardTrace: guardTrace.value
   })
+)
+const aiReviewView = computed<AiReviewView | null>(() =>
+  buildAiReviewView(guardTrace.value, data.value?.event.status ?? '')
 )
 const reportSummaryEntries = computed<ReportSummaryEntry[]>(() =>
   (data.value?.report?.summary_text.split('\n').filter(Boolean) ?? [])
@@ -315,6 +329,14 @@ function aiReviewDecisionLabel(value?: string | null) {
   if (key === 'rules_only_mode') return '仅规则判定，不触发研判复核'
   if (key === 'confirmed_by_policy') return '已被策略确认，无需再次复核'
   if (key === 'target_protection_disabled') return '目标未开启防护'
+  return value || '未记录'
+}
+
+function aiReviewStatusLabel(value?: string | null) {
+  const key = (value || '').trim().toLowerCase()
+  if (key === 'completed') return 'AI 已完成复核'
+  if (key === 'fallback_to_rules') return 'AI 复核失败，已回退规则'
+  if (key === 'skipped') return 'AI 未介入'
   return value || '未记录'
 }
 
@@ -496,6 +518,7 @@ function formatReportSummaryValue(key: string, value: string) {
   if (key === 'ai_endpoint_protection') return protectionModeLabel(value)
   if (key === 'ai_review_mode') return aiReviewModeLabel(value)
   if (key === 'ai_review_invoked') return boolDisplayLabel(value)
+  if (key === 'ai_review_status') return aiReviewStatusLabel(value)
   if (key === 'review_decision') return aiReviewDecisionLabel(value)
   if (key === 'authorization_decision') return guardDecisionLabel(value)
   if (key === 'rule_verdict') return ruleVerdictLabel(value)
@@ -591,6 +614,127 @@ function guardSourceLabel(source?: string | null) {
   if (source === 'task_runner_evaluated') return '执行阶段评估'
   if (source === 'raw_response_embedded') return '响应内嵌结果'
   return '未记录'
+}
+
+function formatAiReviewAdjustment(adjustment?: string | null) {
+  const raw = (adjustment || '').trim()
+  if (!raw) {
+    return ''
+  }
+
+  if (raw.startsWith('review_cannot_downgrade_status:')) {
+    const payload = raw.slice('review_cannot_downgrade_status:'.length)
+    const [reviewStatus, finalStatus] = payload.split('->')
+    return `AI 建议 ${eventLabel(reviewStatus || '')}，规则维持 ${eventLabel(finalStatus || '')}`
+  }
+
+  if (raw.startsWith('review_cannot_downgrade_level:')) {
+    const payload = raw.slice('review_cannot_downgrade_level:'.length)
+    const [reviewLevel, finalLevel] = payload.split('->')
+    return `AI 建议风险降为 ${levelLabel(reviewLevel || '')}，规则维持 ${levelLabel(finalLevel || '')}`
+  }
+
+  return raw.replace(/_/g, ' ')
+}
+
+function formatAiReviewSkipReason(reviewDecision?: string | null) {
+  const key = (reviewDecision || '').trim().toLowerCase()
+  if (key === 'confirmed_by_policy') return '规则已直接定性，本次没有再交给 AI'
+  if (key === 'rules_only_mode') return '当前策略设置为仅规则判定'
+  if (key === 'target_protection_disabled') return '该目标未启用辅助研判'
+  if (key === 'review_suspicious_only') return '当前事件未进入 AI 复核范围'
+  if (key === 'review_ai_api_url_not_configured') return '缺少研判 API 地址配置'
+  if (key === 'review_ai_api_key_not_configured') return '缺少研判 API 密钥配置'
+  return '本次未触发 AI 复核'
+}
+
+function formatAiReviewError(error?: string | null) {
+  const content = displayText(error)
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!content) {
+    return ''
+  }
+  return content.length > 160 ? `${content.slice(0, 160)}...` : content
+}
+
+function resolveReviewEventStatus(status?: string | null, fallback = 'allowed') {
+  const normalized = normalizeEventStatus(status)
+  if (normalized === 'intercepted' || normalized === 'suspicious' || normalized === 'allowed') {
+    return normalized
+  }
+  return fallback
+}
+
+function buildAiReviewView(trace?: GuardTrace | null, finalStatusRaw?: string | null): AiReviewView | null {
+  if (!trace) {
+    return null
+  }
+
+  const reviewStatus = (trace.ai_review_status || '').trim().toLowerCase()
+  const finalStatus = resolveReviewEventStatus(finalStatusRaw, 'allowed')
+  const aiOpinion = resolveReviewEventStatus(trace.ai_review_result_status, finalStatus)
+  const adjustments = (trace.ai_review_adjustments || [])
+    .map((item) => formatAiReviewAdjustment(item))
+    .filter(Boolean)
+  const error = formatAiReviewError(trace.ai_review_error)
+
+  if (reviewStatus === 'completed') {
+    if (adjustments.length) {
+      return {
+        statusLabel: aiReviewStatusLabel(trace.ai_review_status),
+        statusTone: 'warn',
+        opinionLabel: `AI认为：${eventLabel(aiOpinion)}`,
+        opinionTone: eventTone(aiOpinion),
+        summary: `AI 认为本次请求应为${eventLabel(aiOpinion)}`,
+        detail: `最终没有按 AI 意见降级，平台仍维持 ${eventLabel(finalStatus)}`,
+        adjustments,
+        error
+      }
+    }
+
+    return {
+      statusLabel: aiReviewStatusLabel(trace.ai_review_status),
+      statusTone: 'safe',
+      opinionLabel: `AI认为：${eventLabel(aiOpinion)}`,
+      opinionTone: eventTone(aiOpinion),
+      summary: `AI 认为本次请求应为${eventLabel(aiOpinion)}`,
+      detail:
+        aiOpinion === finalStatus
+          ? 'AI 复核意见已进入最终判定'
+          : `最终执行结果为 ${eventLabel(finalStatus)}`,
+      adjustments,
+      error
+    }
+  }
+
+  if (reviewStatus === 'fallback_to_rules') {
+    return {
+      statusLabel: aiReviewStatusLabel(trace.ai_review_status),
+      statusTone: 'warn',
+      opinionLabel: 'AI未形成有效结论',
+      opinionTone: 'warn',
+      summary: 'AI 复核执行失败，平台已自动回退规则链路',
+      detail: `最终仍按规则结果处理，当前为 ${eventLabel(finalStatus)}`,
+      adjustments,
+      error
+    }
+  }
+
+  if (reviewStatus === 'skipped' || !trace.ai_review_invoked) {
+    return {
+      statusLabel: aiReviewStatusLabel(trace.ai_review_status || 'skipped'),
+      statusTone: 'info',
+      opinionLabel: 'AI未介入',
+      opinionTone: 'info',
+      summary: '本次事件没有进入 AI 复核',
+      detail: formatAiReviewSkipReason(trace.review_decision),
+      adjustments,
+      error
+    }
+  }
+
+  return null
 }
 
 function isAiReviewDisabled(trace?: GuardTrace | null) {
@@ -1068,6 +1212,36 @@ function triggerFileDownload(file: DownloadedFile) {
                   <StatusPill :label="`控制面 ${attackSummary.counts.controls}`" tone="safe" />
                   <StatusPill :label="`规则 ${attackSummary.counts.rules}`" tone="warn" />
                   <StatusPill :label="`信号 ${attackSummary.counts.signals}`" tone="danger" />
+                </div>
+              </article>
+              <article v-if="aiReviewView" class="field-card field-card-compact">
+                <div class="field-head">
+                  <div>
+                    <h4>AI 研判</h4>
+                  </div>
+                  <small class="field-count">规则复核结果</small>
+                </div>
+                <div class="token-list">
+                  <StatusPill :label="aiReviewView.statusLabel" :tone="aiReviewView.statusTone" />
+                  <StatusPill :label="aiReviewView.opinionLabel" :tone="aiReviewView.opinionTone" />
+                </div>
+                <div class="detail-block">
+                  <p class="security-summary-note">{{ aiReviewView.summary }}</p>
+                  <p class="security-summary-subnote">{{ aiReviewView.detail }}</p>
+                </div>
+                <div v-if="aiReviewView.adjustments.length" class="security-review-list">
+                  <div
+                    v-for="(item, index) in aiReviewView.adjustments"
+                    :key="`${item}-${index}`"
+                    class="security-review-row"
+                  >
+                    <strong>规则修正</strong>
+                    <span>{{ item }}</span>
+                  </div>
+                </div>
+                <div v-if="aiReviewView.error" class="security-review-alert">
+                  <strong>失败原因</strong>
+                  <span>{{ aiReviewView.error }}</span>
                 </div>
               </article>
             </div>

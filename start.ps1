@@ -85,6 +85,33 @@ function Test-PortInUse {
     }
 }
 
+function Parse-RedisUrl {
+    param(
+        [string]$Url
+    )
+
+    $default = @{
+        Host = "127.0.0.1"
+        Port = 6379
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Url)) {
+        return $default
+    }
+
+    if ($Url -match '^(?:redis|rediss)://(?:[^@/]+@)?(?<host>\[[^\]]+\]|[^:/?#]+)(?::(?<port>\d+))?(?:/.*)?$') {
+        $redisHostName = $Matches.host.Trim('[', ']')
+        $port = if ($Matches.port) { [int]$Matches.port } else { 6379 }
+
+        return @{
+            Host = $redisHostName
+            Port = $port
+        }
+    }
+
+    return $default
+}
+
 function Resolve-AvailablePort {
     param(
         [int[]]$Candidates,
@@ -104,6 +131,133 @@ function Resolve-AvailablePort {
     }
 
     throw "No available port was found near $StartAt."
+}
+
+function Resolve-RedisServerPath {
+    param(
+        [string]$ConfiguredPath
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        $candidates.Add($ConfiguredPath)
+    }
+
+    foreach ($candidate in @(
+        (Join-Path $ProjectRoot "tools\redis\redis-server.exe"),
+        (Join-Path $ProjectRoot "redis\redis-server.exe"),
+        "C:\Users\hjydehuipu\Desktop\网安\poc\sskit\sskit-windows-v1_0_1\env\redis\redis-server.exe"
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+
+    $command = Get-Command redis-server.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace($command.Path)) {
+        $candidates.Add($command.Path)
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return (Resolve-Path -Path $candidate).Path
+        }
+    }
+
+    throw "redis-server.exe was not found. Set REDIS_SERVER_PATH in .env or place Redis in one of the expected locations."
+}
+
+function Test-RedisPing {
+    param(
+        [string]$RedisHost = "127.0.0.1",
+        [int]$Port = 6379,
+        [int]$TimeoutMs = 1000
+    )
+
+    $client = $null
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $async = $client.BeginConnect($RedisHost, $Port, $null, $null)
+        if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+            return $false
+        }
+
+        $client.EndConnect($async)
+        $stream = $client.GetStream()
+        $stream.ReadTimeout = $TimeoutMs
+        $stream.WriteTimeout = $TimeoutMs
+
+        $request = [System.Text.Encoding]::ASCII.GetBytes("*1`r`n`$4`r`nPING`r`n")
+        $stream.Write($request, 0, $request.Length)
+
+        $buffer = New-Object byte[] 64
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+        if ($read -le 0) {
+            return $false
+        }
+
+        $response = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+        return $response.StartsWith("+PONG")
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $client) {
+            $client.Close()
+        }
+    }
+}
+
+function Start-ManagedRedis {
+    param(
+        [string]$ServerPath,
+        [string]$WorkingDirectory,
+        [string]$OutLog,
+        [string]$ErrLog,
+        [string]$PidFile,
+        [string]$RedisHost = "127.0.0.1",
+        [int]$Port = 6379
+    )
+
+    foreach ($path in @($OutLog, $ErrLog, $PidFile)) {
+        if (Test-Path $path) {
+            Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Ensure-Directory -Path $WorkingDirectory
+
+    $arguments = @(
+        "--bind", $RedisHost,
+        "--port", $Port,
+        "--dir", $WorkingDirectory,
+        "--dbfilename", "dump.rdb",
+        "--appendonly", "no",
+        "--save", '""',
+        "--loglevel", "notice"
+    )
+
+    $process = Start-Process -FilePath $ServerPath -ArgumentList $arguments -WorkingDirectory (Split-Path -Parent $ServerPath) -WindowStyle Hidden -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog -PassThru
+    Set-Content -Path $PidFile -Value $process.Id -Encoding ascii
+    return $process
+}
+
+function Wait-RedisReady {
+    param(
+        [string]$RedisHost = "127.0.0.1",
+        [int]$Port = 6379,
+        [int]$TimeoutSec = 30
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        if (Test-RedisPing -RedisHost $RedisHost -Port $Port -TimeoutMs 1000) {
+            return $true
+        }
+
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
 }
 
 function Stop-ProcessTree {
@@ -233,34 +387,6 @@ function Invoke-Step {
     & $Action
 }
 
-if ($Mode -eq "docker") {
-    Push-Location $ProjectRoot
-    try {
-        $composeArgs = @("compose")
-        if ($ExternalWorker) {
-            $composeArgs += @("--profile", "external-worker")
-        }
-        $composeArgs += "up"
-        if ($Build) {
-            $composeArgs += "--build"
-        }
-        $composeArgs += "-d"
-        docker @composeArgs
-    }
-    finally {
-        Pop-Location
-    }
-
-    Write-Host ""
-    Write-Host "Docker services are starting." -ForegroundColor Green
-    Write-Host "Frontend: http://0.0.0.0:5173" -ForegroundColor Gray
-    Write-Host "Backend:  http://0.0.0.0:8000" -ForegroundColor Gray
-    if ($ExternalWorker) {
-        Write-Host "Worker:   external-worker profile enabled" -ForegroundColor Gray
-    }
-    return
-}
-
 Ensure-Directory -Path $RunLogDir
 
 if ((-not (Test-Path $EnvFile)) -and (Test-Path $EnvExampleFile)) {
@@ -279,6 +405,69 @@ $aiApiKey = if ($envConfig.ContainsKey("AI_API_KEY")) { $envConfig["AI_API_KEY"]
 $aiReady = ($aiProvider -ne "disabled") -and (-not [string]::IsNullOrWhiteSpace($aiModel))
 $workerMode = if ($ExternalWorker) { "external" } else { "embedded" }
 
+if ($Mode -eq "docker") {
+    $dockerBackendPort = if ($envConfig.ContainsKey("BACKEND_PORT")) { [int]$envConfig["BACKEND_PORT"] } else { 8000 }
+    $dockerFrontendPort = if ($envConfig.ContainsKey("FRONTEND_PORT")) { [int]$envConfig["FRONTEND_PORT"] } else { 5173 }
+
+    Push-Location $ProjectRoot
+    try {
+        $composeArgs = @("compose")
+        if ($ExternalWorker) {
+            $composeArgs += @("--profile", "external-worker")
+        }
+        $composeArgs += "up"
+        if ($Build) {
+            $composeArgs += "--build"
+        }
+        $composeArgs += "-d"
+        docker @composeArgs
+
+        if (-not (Wait-HttpReady -Url "http://127.0.0.1:$dockerBackendPort/health" -AllowedStatusCodes @(200) -TimeoutSec 120)) {
+            docker compose ps
+            docker compose logs --tail 80 postgres init backend
+            throw "Backend did not become ready on http://127.0.0.1:$dockerBackendPort/health ."
+        }
+
+        if (-not (Wait-HttpReady -Url "http://127.0.0.1:$dockerFrontendPort" -AllowedStatusCodes @(200) -TimeoutSec 120)) {
+            docker compose ps
+            docker compose logs --tail 80 frontend
+            throw "Frontend did not become ready on http://127.0.0.1:$dockerFrontendPort ."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    Write-Host ""
+    Write-Host "Docker services are ready." -ForegroundColor Green
+    Write-Host "Frontend : http://0.0.0.0:$dockerFrontendPort" -ForegroundColor Gray
+    Write-Host "Backend  : http://0.0.0.0:$dockerBackendPort" -ForegroundColor Gray
+    Write-Host "Docs     : http://0.0.0.0:$dockerBackendPort/docs" -ForegroundColor Gray
+    Write-Host "Env      : $appEnv" -ForegroundColor Gray
+    Write-Host "Bootstrap: $bootstrapMode" -ForegroundColor Gray
+    Write-Host "Sample   : $seedSampleData" -ForegroundColor Gray
+    Write-Host "Worker   : $workerMode" -ForegroundColor Gray
+    if ($ExternalWorker) {
+        Write-Host "Profile  : external-worker enabled" -ForegroundColor Gray
+    }
+    if (-not $aiReady) {
+        Write-Host "Real model execution is not ready. Fill AI_PROVIDER / AI_BASE_URL / AI_API_KEY / AI_MODEL in .env." -ForegroundColor Yellow
+    }
+    return
+}
+
+$redisPreferredUrl = if ($envConfig.ContainsKey("REDIS_URL")) { $envConfig["REDIS_URL"] } else { "redis://127.0.0.1:6379/0" }
+$redisUrlParts = Parse-RedisUrl -Url $redisPreferredUrl
+$redisPortPreference = if ($redisUrlParts.Port -gt 0) { $redisUrlParts.Port } else { 6379 }
+$redisServerPath = $null
+$redisDataDir = if ($envConfig.ContainsKey("REDIS_DATA_DIR")) { $envConfig["REDIS_DATA_DIR"] } else { (Join-Path $BackendDir "data\redis-cache") }
+$redisUrl = $null
+$redisPort = $redisPortPreference
+$redisManaged = $false
+$redisOutLog = Join-Path $RunLogDir "start.redis.out.log"
+$redisErrLog = Join-Path $RunLogDir "start.redis.err.log"
+$redisPidFile = Join-Path $RunLogDir "start.redis.pid"
+
 $backendPort = Resolve-AvailablePort -Candidates @(8000, 18000, 18001, 8001) -StartAt 18000
 $frontendPort = Resolve-AvailablePort -Candidates @(5173, 15173, 4173) -StartAt 15173
 $taskWorkerEmbeddedValue = if ($ExternalWorker) { "false" } else { "true" }
@@ -296,9 +485,14 @@ $workerOutLog = Join-Path $RunLogDir "start.worker.out.log"
 $workerErrLog = Join-Path $RunLogDir "start.worker.err.log"
 $workerPidFile = Join-Path $RunLogDir "start.worker.pid"
 
+Stop-ManagedProcess -Name "redis" -PidFile $redisPidFile
 Stop-ManagedProcess -Name "backend" -PidFile $backendPidFile
 Stop-ManagedProcess -Name "frontend" -PidFile $frontendPidFile
 Stop-ManagedProcess -Name "worker" -PidFile $workerPidFile
+
+$backendPort = Resolve-AvailablePort -Candidates @(8000, 18000, 18001, 8001) -StartAt 18000
+$frontendPort = Resolve-AvailablePort -Candidates @(5173, 15173, 4173) -StartAt 15173
+$backendProxyTarget = "http://127.0.0.1:$backendPort"
 
 if (-not $SkipInstall) {
     Invoke-Step -Title "Installing backend dependencies" -Action {
@@ -328,10 +522,41 @@ if (-not $SkipInstall) {
     }
 }
 
+$redisPortCandidates = @($redisPortPreference, 6379, 6380, 16379) | Select-Object -Unique
+if (Test-RedisPing -RedisHost "127.0.0.1" -Port $redisPortPreference -TimeoutMs 1000) {
+    $redisPort = $redisPortPreference
+    $redisUrl = "redis://127.0.0.1:$redisPort/0"
+    Write-Host "Redis already responds on 127.0.0.1:$redisPortPreference, reusing it for this session." -ForegroundColor DarkGray
+} else {
+    $redisPort = Resolve-AvailablePort -Candidates $redisPortCandidates -StartAt $redisPortPreference
+    $redisUrl = "redis://127.0.0.1:$redisPort/0"
+    $redisServerPath = Resolve-RedisServerPath -ConfiguredPath ($(if ($envConfig.ContainsKey("REDIS_SERVER_PATH")) { $envConfig["REDIS_SERVER_PATH"] } else { "" }))
+
+    Invoke-Step -Title "Starting local Redis cache" -Action {
+        Start-ManagedRedis -ServerPath $redisServerPath -WorkingDirectory $redisDataDir -OutLog $redisOutLog -ErrLog $redisErrLog -PidFile $redisPidFile -Port $redisPort | Out-Null
+    }
+
+    if (-not (Wait-RedisReady -RedisHost "127.0.0.1" -Port $redisPort -TimeoutSec 30)) {
+        Show-RecentLog -Label "redis stdout" -Path $redisOutLog
+        Show-RecentLog -Label "redis stderr" -Path $redisErrLog
+        throw "Redis did not become ready on redis://127.0.0.1:$redisPort/0 ."
+    }
+}
+
+$env:CACHE_BACKEND = "redis"
+$env:REDIS_URL = $redisUrl
+
 $backendCommands = @(
     '$env:PYTHONIOENCODING = ''utf-8''',
+    '$env:PYTHONUNBUFFERED = ''1''',
+    '$env:PYTHONFAULTHANDLER = ''1''',
+    '$env:CACHE_BACKEND = ''redis''',
+    ('$env:REDIS_URL = ''{0}''' -f $redisUrl),
     ('$env:TASK_WORKER_EMBEDDED = ''{0}''' -f $taskWorkerEmbeddedValue),
-    ('python run_dev.py --host {0} --port {1}' -f $bindHost, $backendPort)
+    ('python -X faulthandler run_dev.py --host {0} --port {1} --no-reload' -f $bindHost, $backendPort),
+    '$exitCode = $LASTEXITCODE',
+    'Write-Output ("[process-exit] backend exited with code {0}" -f $exitCode)',
+    'exit $exitCode'
 )
 
 $frontendCommands = @(
@@ -342,8 +567,15 @@ $frontendCommands = @(
 
 $workerCommands = @(
     '$env:PYTHONIOENCODING = ''utf-8''',
+    '$env:PYTHONUNBUFFERED = ''1''',
+    '$env:PYTHONFAULTHANDLER = ''1''',
+    '$env:CACHE_BACKEND = ''redis''',
+    ('$env:REDIS_URL = ''{0}''' -f $redisUrl),
     '$env:TASK_WORKER_EMBEDDED = ''false''',
-    "python run_worker.py"
+    "python -X faulthandler run_worker.py",
+    '$exitCode = $LASTEXITCODE',
+    'Write-Output ("[process-exit] worker exited with code {0}" -f $exitCode)',
+    'exit $exitCode'
 )
 
 Invoke-Step -Title "Starting backend in hidden mode" -Action {
@@ -382,6 +614,7 @@ Write-Host "Bootstrap: $bootstrapMode" -ForegroundColor Gray
 Write-Host "Sample   : $seedSampleData" -ForegroundColor Gray
 Write-Host "Provider : $aiProvider" -ForegroundColor Gray
 Write-Host "Worker   : $workerMode" -ForegroundColor Gray
+Write-Host "Cache    : redis ($redisUrl)" -ForegroundColor Gray
 Write-Host "Model    : $(if ($aiModel) { $aiModel } else { '-' })" -ForegroundColor Gray
 Write-Host "API key  : $(Get-MaskedSecret -Value $aiApiKey)" -ForegroundColor Gray
 Write-Host "Logs     : $RunLogDir" -ForegroundColor Gray

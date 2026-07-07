@@ -26,6 +26,22 @@ type LoginResponse = {
   user: AuthUser
 }
 
+type AuthCodePurpose = 'register' | 'reset_password'
+
+type RegisterPayload = {
+  username: string
+  email: string
+  password: string
+  code: string
+  real_name?: string
+}
+
+type ResetPasswordPayload = {
+  email: string
+  code: string
+  new_password: string
+}
+
 function readStorage(key: string) {
   if (typeof window === 'undefined') {
     return null
@@ -56,10 +72,40 @@ function buildNetworkError(error: unknown) {
   return error instanceof Error ? error : new Error('请求失败')
 }
 
+function messageFromStatus(status: number) {
+  if (status === 401) return '用户名或密码错误'
+  if (status === 403) return '当前账号无权访问'
+  if (status === 404) return '认证接口不存在，请确认后端已启动并正确代理 /api'
+  if (status === 422) return '提交参数不完整或格式不正确'
+  if (status === 429) return '操作过于频繁，请稍后再试'
+  if (status >= 500) return '后端服务异常，请查看后端日志'
+  return `HTTP ${status}`
+}
+
+async function readEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
+  const rawText = await response.text()
+  if (!rawText.trim()) {
+    const detail =
+      response.status >= 500
+        ? '后端接口没有返回内容，通常是前端代理目标未启动或后端进程已退出'
+        : '接口没有返回内容'
+    throw new Error(`${messageFromStatus(response.status)}：${detail}`)
+  }
+
+  try {
+    return JSON.parse(rawText) as ApiEnvelope<T>
+  } catch {
+    const preview = rawText.replace(/\s+/g, ' ').slice(0, 120)
+    throw new Error(
+      `${messageFromStatus(response.status)}：接口未返回 JSON，请检查 Vite 代理或后端地址。响应片段：${preview}`
+    )
+  }
+}
+
 async function unwrapEnvelope<T>(response: Response): Promise<T> {
-  const payload = (await response.json()) as ApiEnvelope<T>
+  const payload = await readEnvelope<T>(response)
   if (!response.ok || payload.code !== 0) {
-    throw new Error(payload.message || `HTTP ${response.status}`)
+    throw new Error(payload.message || messageFromStatus(response.status))
   }
   return payload.data
 }
@@ -136,6 +182,63 @@ export async function login(username: string, password: string) {
   authState.initialized = true
   persistSession()
   return data
+}
+
+export async function sendAuthCode(email: string, purpose: AuthCodePurpose, username?: string) {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/auth/send-code`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ email, purpose, username })
+    })
+  } catch (error) {
+    throw buildNetworkError(error)
+  }
+
+  return unwrapEnvelope<{ sent: boolean }>(response)
+}
+
+export async function registerWithEmail(payload: RegisterPayload) {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/auth/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    })
+  } catch (error) {
+    throw buildNetworkError(error)
+  }
+
+  const data = await unwrapEnvelope<LoginResponse>(response)
+  authState.token = data.access_token
+  authState.user = data.user
+  authState.expiresAt = data.expires_at
+  authState.initialized = true
+  persistSession()
+  return data
+}
+
+export async function resetPasswordWithEmail(payload: ResetPasswordPayload) {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    })
+  } catch (error) {
+    throw buildNetworkError(error)
+  }
+
+  return unwrapEnvelope<{ reset: boolean }>(response)
 }
 
 export async function initializeAuth() {

@@ -111,14 +111,17 @@ def _load_report_artifact(
         return None
 
     if report.file_path:
-        artifact_path = resolve_report_path(report.file_path)
-        if artifact_path.exists():
-            try:
-                payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    return payload
-            except (OSError, json.JSONDecodeError):
-                pass
+        try:
+            artifact_path = resolve_report_path(report.file_path)
+            if artifact_path.exists():
+                try:
+                    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        return payload
+                except (OSError, json.JSONDecodeError):
+                    pass
+        except ValueError:
+            pass
 
     try:
         return build_report_artifact_payload(report=report, task=task, event=event)

@@ -1234,7 +1234,7 @@ function nextPage() {
                 </div>
                 <div class="route-card-copy">
                   <p class="card-subtitle">{{ endpointGroupLabel(item.endpoint_group) }} / {{ item.model_name }}</p>
-                  <p class="route-card-meta">{{ item.base_url }}</p>
+                  <p class="route-card-meta">{{ displayText(item.base_url) }}</p>
                 </div>
               </button>
             </div>

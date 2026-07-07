@@ -451,6 +451,12 @@ export type GuardTrace = {
   ai_review_mode: string
   ai_review_invoked: boolean
   review_decision: string
+  ai_review_status: string
+  ai_review_adjustments: string[]
+  ai_review_error: string
+  ai_review_result_status: string
+  ai_review_result_level: string
+  ai_review_result_rules: string[]
   rule_verdict: string
   rule_assessment?: GuardRuleAssessment | null
 }
@@ -1106,6 +1112,36 @@ function buildNetworkError(error: unknown) {
   return error instanceof Error ? error : new Error('请求失败')
 }
 
+function messageFromStatus(status: number) {
+  if (status === 401) return '登录已失效或无权访问'
+  if (status === 403) return '当前账号无权访问'
+  if (status === 404) return '接口不存在，请确认后端已启动并正确代理 /api'
+  if (status === 422) return '提交参数不完整或格式不正确'
+  if (status === 429) return '操作过于频繁，请稍后再试'
+  if (status >= 500) return '后端服务异常，请查看后端日志'
+  return `HTTP ${status}`
+}
+
+async function readEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
+  const rawText = await response.text()
+  if (!rawText.trim()) {
+    const detail =
+      response.status >= 500
+        ? '后端接口没有返回内容，通常是前端代理目标未启动或后端进程已退出'
+        : '接口没有返回内容'
+    throw new Error(`${messageFromStatus(response.status)}：${detail}`)
+  }
+
+  try {
+    return JSON.parse(rawText) as ApiEnvelope<T>
+  } catch {
+    const preview = rawText.replace(/\s+/g, ' ').slice(0, 120)
+    throw new Error(
+      `${messageFromStatus(response.status)}：接口未返回 JSON，请检查 Vite 代理或后端地址。响应片段：${preview}`
+    )
+  }
+}
+
 function buildQuery(params: Record<string, string | number | boolean | null | undefined>) {
   const searchParams = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
@@ -1119,25 +1155,12 @@ function buildQuery(params: Record<string, string | number | boolean | null | un
 }
 
 async function handleHttpError<T>(response: Response): Promise<never> {
-  let message = `HTTP ${response.status}`
-  const contentType = response.headers.get('Content-Type') || ''
-
-  if (contentType.includes('application/json')) {
-    try {
-      const payload = (await response.json()) as ApiEnvelope<T>
-      message = payload.message || message
-    } catch {
-      // Ignore malformed error payloads.
-    }
-  } else {
-    try {
-      const text = await response.text()
-      if (text) {
-        message = text
-      }
-    } catch {
-      // Ignore non-text failure payloads.
-    }
+  let message = messageFromStatus(response.status)
+  try {
+    const payload = await readEnvelope<T>(response)
+    message = payload.message || message
+  } catch (error) {
+    message = error instanceof Error ? error.message : message
   }
 
   if (response.status === 401) {
@@ -1171,7 +1194,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return handleHttpError<T>(response)
   }
 
-  const payload = (await response.json()) as ApiEnvelope<T>
+  const payload = await readEnvelope<T>(response)
   if (payload.code !== 0) {
     throw new Error(payload.message || '接口返回失败')
   }

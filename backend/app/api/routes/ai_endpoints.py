@@ -31,6 +31,7 @@ from ...services.ai_endpoints import (
 )
 from ...services.audit import append_audit_log
 from ...services.authorization import require_roles
+from ...services.cache import cached_payload, invalidate_cache_namespaces
 from ...services.mcp_security import (
     apply_predefined_mcp_policy_template,
     build_ai_endpoint_mcp_policy_profile,
@@ -72,6 +73,10 @@ def _get_or_404(db: Session, endpoint_id: int) -> AiEndpoint:
     if item is None:
         raise HTTPException(status_code=404, detail="ai endpoint not found")
     return item
+
+
+def _invalidate_ai_endpoint_cache() -> None:
+    invalidate_cache_namespaces("ai_endpoints", "attack_tasks", "dashboard")
 
 
 def _release_endpoint_bindings(db: Session, endpoint_id: int) -> tuple[list[RuntimeEnrollmentToken], list[ManagedRuntime]]:
@@ -260,7 +265,14 @@ def list_ai_endpoints(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    return success(_list_payload(db))
+    return success(
+        cached_payload(
+            "ai_endpoints",
+            key_parts={"route": "list"},
+            loader=lambda: _list_payload(db),
+            ttl_seconds=15,
+        )
+    )
 
 
 @router.get("/{endpoint_id}")
@@ -269,9 +281,19 @@ def get_ai_endpoint(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    item = _get_or_404(db, endpoint_id)
-    usage_map = build_ai_endpoint_usage_summaries(db)
-    return success(serialize_ai_endpoint(item, usage_summary=usage_map.get(item.id)))
+    def load_payload() -> dict:
+        item = _get_or_404(db, endpoint_id)
+        usage_map = build_ai_endpoint_usage_summaries(db)
+        return serialize_ai_endpoint(item, usage_summary=usage_map.get(item.id))
+
+    return success(
+        cached_payload(
+            "ai_endpoints",
+            key_parts={"route": "detail", "endpoint_id": endpoint_id},
+            loader=load_payload,
+            ttl_seconds=15,
+        )
+    )
 
 
 @router.get("/{endpoint_id}/mcp-policy")
@@ -280,8 +302,14 @@ def get_ai_endpoint_mcp_policy(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    item = _get_or_404(db, endpoint_id)
-    return success(build_ai_endpoint_mcp_policy_profile(db, endpoint=item))
+    return success(
+        cached_payload(
+            "ai_endpoints",
+            key_parts={"route": "mcp_policy", "endpoint_id": endpoint_id},
+            loader=lambda: build_ai_endpoint_mcp_policy_profile(db, endpoint=_get_or_404(db, endpoint_id)),
+            ttl_seconds=15,
+        )
+    )
 
 
 @router.put("/{endpoint_id}/mcp-policy")
@@ -306,6 +334,7 @@ def update_ai_endpoint_mcp_policy(
         f"updated MCP policy for ai endpoint {item.endpoint_key}",
     )
     db.commit()
+    _invalidate_ai_endpoint_cache()
     return success(build_ai_endpoint_mcp_policy_profile(db, endpoint=item), message="ai endpoint mcp policy updated")
 
 
@@ -329,6 +358,7 @@ def apply_ai_endpoint_mcp_policy_template(
         f"applied MCP policy template {payload.template_key} to ai endpoint {item.endpoint_key}",
     )
     db.commit()
+    _invalidate_ai_endpoint_cache()
     return success(build_ai_endpoint_mcp_policy_profile(db, endpoint=item), message="ai endpoint mcp policy template applied")
 
 
@@ -372,6 +402,7 @@ def batch_update_ai_endpoints(
         f"updated {len(items)} ai endpoints in batch",
     )
     db.commit()
+    _invalidate_ai_endpoint_cache()
     return success(_list_payload(db), message="ai endpoints batch updated")
 
 
@@ -393,6 +424,7 @@ def create_ai_endpoint(
     append_audit_log(db, current_user, "ai-endpoints", "create", f"created ai endpoint {item.endpoint_key}")
     db.commit()
     db.refresh(item)
+    _invalidate_ai_endpoint_cache()
     usage_map = build_ai_endpoint_usage_summaries(db)
     return success(serialize_ai_endpoint(item, usage_summary=usage_map.get(item.id)), message="ai endpoint created")
 
@@ -411,6 +443,7 @@ def update_ai_endpoint(
     append_audit_log(db, current_user, "ai-endpoints", "update", f"updated ai endpoint {item.endpoint_key}")
     db.commit()
     db.refresh(item)
+    _invalidate_ai_endpoint_cache()
     usage_map = build_ai_endpoint_usage_summaries(db)
     return success(serialize_ai_endpoint(item, usage_summary=usage_map.get(item.id)), message="ai endpoint updated")
 
@@ -432,6 +465,7 @@ def delete_ai_endpoint(
         f"deleted ai endpoint {result['endpoint_key']}; released {result['released_tokens']} tokens and {result['released_runtimes']} runtimes",
     )
     db.commit()
+    _invalidate_ai_endpoint_cache()
     return success(result, message="ai endpoint deleted")
 
 
@@ -476,6 +510,7 @@ def cleanup_ai_endpoint_candidates(
         f"cleaned up {len(deleted_items)} demo ai endpoints; released {released_tokens} tokens and {released_runtimes} runtimes",
     )
     db.commit()
+    _invalidate_ai_endpoint_cache()
     return success(
         {
             "deleted_count": len(deleted_items),

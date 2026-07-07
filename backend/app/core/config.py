@@ -14,7 +14,7 @@ DEFAULT_APP_ENV = "development"
 DEFAULT_BOOTSTRAP_MODE = "auto"
 DEFAULT_JWT_SECRET = "blue-team-dev-secret"
 DEFAULT_SERVICE_TOKEN = "blue-team-runtime-token"
-DEFAULT_BOOTSTRAP_ADMIN_PASSWORD = "admin123"
+DEFAULT_BOOTSTRAP_ADMIN_PASSWORD = "admin_123"
 DEFAULT_BOOTSTRAP_ANALYST_PASSWORD = "analyst123"
 LOCAL_CORS_ORIGINS = [
     "http://localhost:4173",
@@ -23,6 +23,7 @@ LOCAL_CORS_ORIGINS = [
     "http://127.0.0.1:5173",
 ]
 LOCAL_CORS_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+LOCAL_TRUSTED_HOSTS = ["*"]
 
 # Load root `.env` for Compose/local startup, then allow backend-specific overrides.
 load_dotenv(PROJECT_ROOT / ".env")
@@ -90,13 +91,36 @@ class Settings(BaseModel):
         default_factory=lambda: env_csv("CORS_ORIGINS", LOCAL_CORS_ORIGINS)
     )
     cors_origin_regex: str = Field(default_factory=lambda: env_str("CORS_ORIGIN_REGEX", default=LOCAL_CORS_ORIGIN_REGEX))
+    trusted_hosts: list[str] = Field(default_factory=lambda: env_csv("TRUSTED_HOSTS", LOCAL_TRUSTED_HOSTS))
     database_url: str = Field(
         default_factory=lambda: env_str("DATABASE_URL", default=f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}")
     )
     database_echo: bool = Field(default_factory=lambda: env_bool("DATABASE_ECHO", False))
     database_pool_pre_ping: bool = Field(default_factory=lambda: env_bool("DATABASE_POOL_PRE_PING", True))
+    cache_backend: str = Field(default_factory=lambda: env_str("CACHE_BACKEND", default="redis").lower())
+    redis_url: str = Field(default_factory=lambda: env_str("REDIS_URL", default="redis://127.0.0.1:6379/0"))
+    cache_namespace: str = Field(default_factory=lambda: env_str("CACHE_NAMESPACE", default="guardian-agent"))
+    cache_default_ttl_seconds: int = Field(default_factory=lambda: int(os.getenv("CACHE_DEFAULT_TTL_SECONDS", "10")))
+    cache_memory_max_items: int = Field(default_factory=lambda: int(os.getenv("CACHE_MEMORY_MAX_ITEMS", "2048")))
     jwt_secret: str = Field(default_factory=lambda: env_str("JWT_SECRET", default=DEFAULT_JWT_SECRET))
     jwt_expire_minutes: int = Field(default_factory=lambda: int(os.getenv("JWT_EXPIRE_MINUTES", "480")))
+    expose_internal_error_details: bool = Field(default_factory=lambda: env_bool("EXPOSE_INTERNAL_ERROR_DETAILS", False))
+    http_request_max_bytes: int = Field(default_factory=lambda: int(os.getenv("HTTP_REQUEST_MAX_BYTES", "2097152")))
+    websocket_message_max_bytes: int = Field(default_factory=lambda: int(os.getenv("WEBSOCKET_MESSAGE_MAX_BYTES", "2097152")))
+    auth_login_rate_limit_attempts: int = Field(default_factory=lambda: int(os.getenv("AUTH_LOGIN_RATE_LIMIT_ATTEMPTS", "10")))
+    auth_login_rate_limit_window_seconds: int = Field(default_factory=lambda: int(os.getenv("AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS", "60")))
+    public_activation_rate_limit_attempts: int = Field(
+        default_factory=lambda: int(os.getenv("PUBLIC_ACTIVATION_RATE_LIMIT_ATTEMPTS", "20"))
+    )
+    public_activation_rate_limit_window_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("PUBLIC_ACTIVATION_RATE_LIMIT_WINDOW_SECONDS", "300"))
+    )
+    runtime_register_rate_limit_attempts: int = Field(
+        default_factory=lambda: int(os.getenv("RUNTIME_REGISTER_RATE_LIMIT_ATTEMPTS", "20"))
+    )
+    runtime_register_rate_limit_window_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("RUNTIME_REGISTER_RATE_LIMIT_WINDOW_SECONDS", "300"))
+    )
     gateway_api_token: str = Field(default_factory=lambda: env_str("GATEWAY_API_TOKEN", default=DEFAULT_SERVICE_TOKEN))
     ai_provider: str = Field(default_factory=lambda: env_str("AI_PROVIDER", default="disabled").lower())
     ai_base_url: str = Field(

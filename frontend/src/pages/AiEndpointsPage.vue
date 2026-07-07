@@ -3,21 +3,8 @@ import { reactive } from 'vue'
 import PageSection from '../components/PageSection.vue'
 import StatusPill from '../components/StatusPill.vue'
 import { useAiEndpointsPage } from '../features/ai-endpoints/useAiEndpointsPage'
-import type { AiEndpointItem } from '../services/api'
 
 const state = reactive(useAiEndpointsPage())
-
-function attackRouteForEndpoint(item?: AiEndpointItem | null) {
-  if (!item) {
-    return { name: 'attack-testing' }
-  }
-  return {
-    name: 'attack-testing',
-    query: {
-      ai_endpoint_id: String(item.id),
-    },
-  }
-}
 </script>
 
 <template>
@@ -171,7 +158,7 @@ function attackRouteForEndpoint(item?: AiEndpointItem | null) {
               />
             </label>
 
-            <button class="endpoint-table-main" type="button" @click="state.selectEndpoint(item.id)">
+            <button class="endpoint-table-main" type="button" @click="state.openEndpoint(item)">
               <div class="endpoint-table-head">
                 <div class="endpoint-table-title">
                   <strong>{{ item.display_name }}</strong>
@@ -190,87 +177,16 @@ function attackRouteForEndpoint(item?: AiEndpointItem | null) {
                 <span>{{ item.connection_mode === 'runtime_bridge_only' ? 'Runtime 桥接' : '直连 Provider' }}</span>
                 <span>{{ state.protectionModeLabels[item.protection_mode] }}</span>
               </div>
-
-              <div class="ai-access-row-next">
-                <strong>{{ state.endpointNextStepLabel(item) }}</strong>
-              </div>
             </button>
 
             <div class="endpoint-table-actions ai-compact-row-actions ai-access-row-actions">
               <button class="primary-button small" type="button" :disabled="state.isBusy" @click.stop="state.openEndpoint(item)">
-                接入配置
+                进入目标
               </button>
-              <RouterLink
-                class="ghost-button small"
-                :to="{ name: 'ai-endpoints-detail', params: { endpointId: String(item.id) } }"
-                @click.stop
-              >
-                治理
-              </RouterLink>
-              <RouterLink class="ghost-button small" :to="attackRouteForEndpoint(item)" @click.stop>
-                攻击测试
-              </RouterLink>
             </div>
           </article>
         </div>
 
-        <aside v-if="state.selectedEndpoint" class="ai-access-context-card">
-          <div class="ai-access-context-head">
-            <div>
-              <p class="panel-kicker">当前选择</p>
-              <h3>{{ state.selectedEndpoint.display_name }}</h3>
-              <span>{{ state.endpointMetaText(state.selectedEndpoint) }}</span>
-            </div>
-            <StatusPill :label="state.endpointStatusLabel(state.selectedEndpoint)" :tone="state.endpointTone(state.selectedEndpoint)" />
-          </div>
-
-          <div class="ai-access-next-box">
-            <span>建议下一步</span>
-            <strong>{{ state.endpointNextStepLabel(state.selectedEndpoint) }}</strong>
-          </div>
-
-          <div class="ai-access-context-metrics">
-            <article>
-              <span>Runtime</span>
-              <strong>{{ state.selectedEndpoint.usage_summary.runtime_count }}</strong>
-              <small>在线 {{ state.selectedEndpoint.usage_summary.runtime_online_count }}</small>
-            </article>
-            <article>
-              <span>激活码</span>
-              <strong>{{ state.selectedEndpoint.usage_summary.token_count }}</strong>
-              <small>待处理 {{ state.endpointRuntimeAttentionCount(state.selectedEndpoint) }}</small>
-            </article>
-            <article>
-              <span>任务</span>
-              <strong>{{ state.selectedEndpoint.usage_summary.task_count }}</strong>
-              <small>运行中 {{ state.selectedEndpoint.usage_summary.active_task_count }}</small>
-            </article>
-          </div>
-
-          <div class="ai-access-context-actions">
-            <button class="primary-button small" type="button" :disabled="state.isBusy" @click="state.openEndpoint(state.selectedEndpoint)">
-              打开接入配置
-            </button>
-            <button class="ghost-button small" type="button" :disabled="state.isBusy" @click="state.testEndpoint(state.selectedEndpoint)">
-              测试连通
-            </button>
-            <RouterLink
-              class="ghost-button small"
-              :to="{ name: 'ai-endpoints-detail', params: { endpointId: String(state.selectedEndpoint.id) } }"
-            >
-              Skill / 目录 / 研判
-            </RouterLink>
-            <RouterLink
-              class="ghost-button small"
-              :to="{ name: 'ai-endpoints-mcp-policy', params: { endpointId: String(state.selectedEndpoint.id) } }"
-            >
-              MCP 策略
-            </RouterLink>
-            <RouterLink class="ghost-button small" :to="attackRouteForEndpoint(state.selectedEndpoint)">
-              攻击测试
-            </RouterLink>
-          </div>
-        </aside>
       </div>
     </PageSection>
 

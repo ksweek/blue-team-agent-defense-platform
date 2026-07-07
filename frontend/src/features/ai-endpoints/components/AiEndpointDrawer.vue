@@ -197,7 +197,7 @@ function secretValueTypeLabel(item: EndpointSecretDraft) {
                           <p class="card-subtitle">例如 OpenAI / vLLM / one-api 网关</p>
                         </div>
                         <div class="settings-form-control">
-                          <input v-model="form.base_url" class="text-input settings-form-input" type="text" placeholder="https://api.example.com/v1" />
+                          <input v-model="form.base_url" class="text-input settings-form-input" type="password" placeholder="https://api.example.com/v1" />
                         </div>
                       </div>
 

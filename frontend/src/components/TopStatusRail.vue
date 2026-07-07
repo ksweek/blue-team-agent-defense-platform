@@ -37,7 +37,7 @@ defineProps<{
       </div>
     </article>
 
-    <div class="status-rail-items">
+    <div v-if="items.length" class="status-rail-items">
       <article
         v-for="item in items"
         :key="item.label"

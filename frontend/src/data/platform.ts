@@ -1,11 +1,30 @@
 export const navSections = [
   {
-    title: '主入口',
+    title: '快捷入口',
+    icon: 'dashboard',
     items: [
       { label: '系统安全总览', to: '/', icon: 'dashboard' },
+    ],
+  },
+  {
+    title: '目标治理',
+    icon: 'ai',
+    items: [
       { label: 'AI 目标', to: '/ai-endpoints', icon: 'ai' },
+    ],
+  },
+  {
+    title: '监测响应',
+    icon: 'events',
+    items: [
       { label: '安全事件', to: '/security-events', icon: 'events' },
       { label: '攻击实验室', to: '/attack-lab', icon: 'samples' },
+    ],
+  },
+  {
+    title: '配置管理',
+    icon: 'settings',
+    items: [
       { label: '系统设置', to: '/system-settings', icon: 'settings' },
     ],
   },

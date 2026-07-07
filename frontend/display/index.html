@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+    <title>GuardianAgent 安全态势感知指挥屏</title>
+    <script type="module" src="./main.ts"></script>
+  </head>
+  <body>
+    <div id="display-app" class="display-app">
+      <div class="screen-bg" aria-hidden="true">
+        <span class="bg-scanline"></span>
+        <span class="bg-vignette"></span>
+        <span class="bg-grid"></span>
+        <span class="bg-map"></span>
+        <span class="bg-radar"></span>
+      </div>
+
+      <div id="auth-overlay" class="auth-overlay hidden">
+        <section class="auth-card">
+          <div class="auth-card-brand">
+            <img src="/logo.svg" alt="GuardianAgent" />
+            <div>
+              <strong>GuardianAgent</strong>
+              <span>安全态势感知指挥屏</span>
+            </div>
+          </div>
+
+          <form id="auth-login-form" class="auth-form">
+            <label>
+              <span>账号</span>
+              <input id="auth-username" type="text" autocomplete="username" placeholder="admin" />
+            </label>
+            <label>
+              <span>密码</span>
+              <input id="auth-password" type="password" autocomplete="current-password" placeholder="admin_123" />
+            </label>
+            <div class="auth-row">
+              <label class="auth-check">
+                <input id="auth-remember" type="checkbox" checked />
+                <span>记住账号</span>
+              </label>
+              <button id="auth-to-forgot" type="button">忘记密码</button>
+            </div>
+            <p id="auth-error" class="auth-error"></p>
+            <p id="auth-message" class="auth-message"></p>
+            <button class="auth-primary" type="submit">进入指挥屏</button>
+          </form>
+
+          <form id="auth-reset-form" class="auth-form hidden">
+            <label>
+              <span>绑定邮箱</span>
+              <input id="reset-email" type="email" autocomplete="email" placeholder="name@example.com" />
+            </label>
+            <div class="auth-code-row">
+              <label>
+                <span>验证码</span>
+                <input id="reset-code" type="text" autocomplete="one-time-code" placeholder="6 位验证码" />
+              </label>
+              <button id="auth-send-code" type="button">发送</button>
+            </div>
+            <label>
+              <span>新密码</span>
+              <input id="reset-password" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+            </label>
+            <p id="auth-reset-error" class="auth-error"></p>
+            <p id="auth-reset-message" class="auth-message"></p>
+            <button class="auth-primary" type="submit">重置密码</button>
+            <button id="auth-back-login" class="auth-secondary" type="button">返回登录</button>
+          </form>
+        </section>
+      </div>
+
+      <header class="command-header">
+        <div class="header-wing left"></div>
+        <div class="command-title">
+          <span>GuardianAgent</span>
+          <strong>AI 安全态势感知指挥屏</strong>
+          <em>Security Situation Awareness Command Center</em>
+        </div>
+        <div class="header-wing right"></div>
+      </header>
+
+      <main class="display-main-grid">
+        <aside class="screen-column left-column">
+          <section class="screen-panel threat-panel">
+            <header class="panel-head">
+              <div class="panel-title">
+                <span>威胁情报总览</span>
+              </div>
+              <small>24H 趋势</small>
+            </header>
+            <div class="threat-overview">
+              <div id="threat-ring" class="threat-ring">
+                <div class="ring-core">
+                  <strong id="threat-score">0</strong>
+                  <span>威胁指数</span>
+                  <em id="threat-level">稳定</em>
+                </div>
+              </div>
+              <div class="threat-side">
+                <div class="chart-caption">
+                  <span>Threat Trends</span>
+                  <strong id="threat-total">0</strong>
+                </div>
+                <svg viewBox="0 0 240 72" preserveAspectRatio="none" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="threatLineGradient" x1="0" x2="1" y1="0" y2="0">
+                      <stop offset="0%" stop-color="#ff5c5c" />
+                      <stop offset="100%" stop-color="#ffb14a" />
+                    </linearGradient>
+                  </defs>
+                  <polyline id="threat-mini-line" class="spark-line danger" points="" />
+                </svg>
+                <div id="threat-triplets" class="threat-triplets"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen-panel trend-panel">
+            <header class="panel-head">
+              <div class="panel-title">
+                <span>攻击趋势分析</span>
+              </div>
+              <div class="segmented">
+                <button class="active" type="button">24H</button>
+                <button type="button">7D</button>
+                <button type="button">30D</button>
+              </div>
+            </header>
+            <div class="trend-chart-shell">
+              <svg viewBox="0 0 520 188" preserveAspectRatio="none" aria-hidden="true">
+                <g class="chart-grid">
+                  <line x1="0" x2="520" y1="38" y2="38" />
+                  <line x1="0" x2="520" y1="80" y2="80" />
+                  <line x1="0" x2="520" y1="122" y2="122" />
+                  <line x1="0" x2="520" y1="164" y2="164" />
+                </g>
+                <polyline id="trend-line-attack" class="trend-line attack" points="" />
+                <polyline id="trend-line-block" class="trend-line block" points="" />
+                <polyline id="trend-line-review" class="trend-line review" points="" />
+              </svg>
+              <div class="trend-legend">
+                <span class="attack">攻击次数</span>
+                <span class="block">拦截量</span>
+                <span class="review">复核量</span>
+              </div>
+              <div id="trend-days" class="trend-days"></div>
+            </div>
+          </section>
+
+          <section class="screen-panel top5-panel">
+            <header class="panel-head">
+              <div class="panel-title">
+                <span>已阻断攻击 TOP 5</span>
+              </div>
+              <strong id="blocked-badge" class="panel-badge danger">Blocked 0</strong>
+            </header>
+            <div id="attack-top-list" class="data-list"></div>
+          </section>
+
+          <section class="screen-panel feed-panel">
+            <header class="panel-head">
+              <div class="panel-title">
+                <span>事件实时动态</span>
+                <em>Event Feed</em>
+              </div>
+              <strong id="event-feed-badge" class="panel-badge safe">运行 0</strong>
+            </header>
+            <div id="event-feed-list" class="data-list"></div>
+          </section>
+        </aside>
+
+        <section class="screen-column center-column">
+          <section class="screen-panel runtime-panel">
+            <header class="runtime-head">
+              <div class="runtime-title">
+                <div class="runtime-shield-mini"></div>
+                <div>
+                  <span>AI 运行时安全态势</span>
+                  <strong>GuardianAgent Security Runtime Core</strong>
+                </div>
+              </div>
+              <div class="runtime-status">
+                <strong id="protection-status" class="status-chip safe">防护状态：运行中</strong>
+                <span id="clock-text">--</span>
+                <span id="refresh-status">等待同步</span>
+              </div>
+            </header>
+
+            <section id="center-stat-row" class="center-stat-row"></section>
+
+            <div class="model-layer">
+              <span class="layer-name">&#x6A21;&#x578B;&#x5C42;</span>
+              <div id="model-layer-list" class="model-layer-list"></div>
+            </div>
+
+            <div class="core-stage">
+              <span class="stage-label left">智能体层</span>
+              <span class="stage-label right">工具与服务层</span>
+              <div class="core-grid-lines" aria-hidden="true"></div>
+              <div class="core-shell">
+                <span class="core-energy core-energy-outer"></span>
+                <span class="core-energy core-energy-inner"></span>
+                <span class="core-sweep core-sweep-horizontal"></span>
+                <span class="core-sweep core-sweep-vertical"></span>
+                <span class="core-pulse-ring pulse-ring-1"></span>
+                <span class="core-pulse-ring pulse-ring-2"></span>
+                <span class="core-packet packet-1"></span>
+                <span class="core-packet packet-2"></span>
+                <span class="core-packet packet-3"></span>
+                <span class="core-packet packet-4"></span>
+                <span class="core-packet packet-5"></span>
+                <span class="core-packet packet-6"></span>
+                <span class="orbit orbit-lg"></span>
+                <span class="orbit orbit-md"></span>
+                <span class="orbit orbit-sm"></span>
+                <svg class="core-link-map" viewBox="0 0 1000 620" preserveAspectRatio="none" aria-hidden="true">
+                  <defs>
+                    <filter id="coreLinkGlow" x="-40%" y="-40%" width="180%" height="180%">
+                      <feGaussianBlur stdDeviation="2.8" result="blur" />
+                      <feMerge>
+                        <feMergeNode in="blur" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                  </defs>
+                  <path class="core-link-path glow" d="M438 158 C 378 154, 318 148, 228 144" />
+                  <path class="core-link-path glow" d="M412 244 C 352 244, 302 240, 216 238" />
+                  <path class="core-link-path glow" d="M412 332 C 352 336, 302 342, 216 346" />
+                  <path class="core-link-path glow" d="M438 420 C 378 428, 318 436, 228 444" />
+                  <path class="core-link-path glow" d="M562 158 C 622 154, 682 148, 772 144" />
+                  <path class="core-link-path glow" d="M588 244 C 648 244, 698 240, 784 238" />
+                  <path class="core-link-path glow" d="M588 332 C 648 336, 698 342, 784 346" />
+                  <path class="core-link-path glow" d="M562 420 C 622 428, 682 436, 772 444" />
+                  <path class="core-link-path" d="M438 158 C 378 154, 318 148, 228 144" />
+                  <path class="core-link-path" d="M412 244 C 352 244, 302 240, 216 238" />
+                  <path class="core-link-path" d="M412 332 C 352 336, 302 342, 216 346" />
+                  <path class="core-link-path" d="M438 420 C 378 428, 318 436, 228 444" />
+                  <path class="core-link-path" d="M562 158 C 622 154, 682 148, 772 144" />
+                  <path class="core-link-path" d="M588 244 C 648 244, 698 240, 784 238" />
+                  <path class="core-link-path" d="M588 332 C 648 336, 698 342, 784 346" />
+                  <path class="core-link-path" d="M562 420 C 622 428, 682 436, 772 444" />
+                  <circle class="core-link-joint" cx="438" cy="158" r="7" />
+                  <circle class="core-link-joint" cx="412" cy="244" r="7" />
+                  <circle class="core-link-joint" cx="412" cy="332" r="7" />
+                  <circle class="core-link-joint" cx="438" cy="420" r="7" />
+                  <circle class="core-link-joint" cx="562" cy="158" r="7" />
+                  <circle class="core-link-joint" cx="588" cy="244" r="7" />
+                  <circle class="core-link-joint" cx="588" cy="332" r="7" />
+                  <circle class="core-link-joint" cx="562" cy="420" r="7" />
+                </svg>
+                <span class="orbit-dot dot-1"></span>
+                <span class="orbit-dot dot-2"></span>
+                <span class="orbit-dot dot-3"></span>
+                <span class="orbit-dot dot-4"></span>
+                <span class="orbit-dot dot-5"></span>
+                <span class="orbit-dot dot-6"></span>
+                <span class="orbit-dot dot-7"></span>
+                <span class="orbit-dot dot-8"></span>
+
+                <div class="core-shield">
+                  <div class="core-logo">
+                    <img src="/logo.svg" alt="" />
+                  </div>
+                  <strong>GuardianAgent</strong>
+                  <span>AI Runtime Core</span>
+                </div>
+
+                <div id="target-node-1" class="core-node target target-1"></div>
+                <div id="target-node-2" class="core-node target target-2"></div>
+                <div id="target-node-3" class="core-node target target-3"></div>
+                <div id="target-node-4" class="core-node target target-4"></div>
+
+                <div id="service-node-1" class="core-node service service-1"></div>
+                <div id="service-node-2" class="core-node service service-2"></div>
+                <div id="service-node-3" class="core-node service service-3"></div>
+                <div id="service-node-4" class="core-node service service-4"></div>
+
+                <button id="target-node-more" class="core-more left" type="button" aria-label="more agents">...</button>
+                <button id="service-node-more" class="core-more right" type="button" aria-label="more services">...</button>
+
+                <div class="data-layer">
+                  <span class="data-layer-label">&#x6570;&#x636E;&#x4E0E;&#x8D44;&#x4EA7;&#x5C42;</span>
+                  <div id="data-asset-strip" class="data-asset-strip"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="capability-strip" class="capability-strip"></div>
+          </section>
+        </section>
+
+        <aside class="screen-column right-column">
+          <section class="screen-panel asset-panel">
+            <header class="panel-head">
+              <div class="panel-title">
+                <span>资产治理</span>
+                <em>Asset Governance</em>
+              </div>
+              <small id="asset-total-text">资产总数 0</small>
+            </header>
+            <div class="asset-governance">
+              <div id="asset-donut" class="asset-donut">
+                <div class="donut-core">
+                  <strong id="asset-total">0</strong>
+                  <span>总资产</span>
+                </div>
+              </div>
+              <div id="asset-distribution" class="data-list compact"></div>
+            </div>
+          </section>
+
+          <section class="screen-panel runtime-monitor-panel">
+            <header class="panel-head">
+              <div class="panel-title">
+                <span>运行时监控</span>
+                <em>Runtime Monitor</em>
+              </div>
+            </header>
+            <div id="runtime-monitor-grid" class="runtime-monitor-grid"></div>
+          </section>
+
+          <section class="screen-panel policy-panel">
+            <header class="panel-head">
+              <div class="panel-title">
+                <span>MCP 策略监控</span>
+                <em>Policy Monitor</em>
+              </div>
+              <strong id="policy-badge" class="panel-badge danger">策略违规 0</strong>
+            </header>
+            <div class="policy-shell">
+              <div id="policy-monitor-list" class="data-list compact"></div>
+              <div class="policy-ring">
+                <div class="donut-core">
+                  <strong id="policy-total">0</strong>
+                  <span>策略总数</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div class="right-mini-row">
+            <section class="screen-panel mini-panel">
+              <header class="mini-head">
+                <span>技能信任状态</span>
+                <em>Skill Trust</em>
+              </header>
+              <div id="skill-trust-circle" class="mini-circle safe">
+                <strong id="skill-trust-rate">0</strong>
+                <span>/100</span>
+              </div>
+              <p id="skill-trust-text">可信技能 0 / 待审 0</p>
+            </section>
+            <section class="screen-panel mini-panel">
+              <header class="mini-head">
+                <span>运行时在线状态</span>
+                <em>Runtime Online</em>
+              </header>
+              <div id="runtime-online-circle" class="mini-circle info">
+                <strong id="runtime-online-rate">0</strong>
+                <span>%</span>
+              </div>
+              <p id="runtime-online-text">0/0 在线</p>
+            </section>
+          </div>
+        </aside>
+      </main>
+
+      <section class="bottom-grid">
+        <section class="screen-panel timeline-panel">
+          <header class="panel-head">
+            <div class="panel-title">
+              <span>事件时间线</span>
+              <em>Security Events</em>
+            </div>
+            <strong id="timeline-badge" class="panel-badge info">全部 0</strong>
+          </header>
+          <div id="timeline-filters" class="filter-row"></div>
+          <div id="timeline-list" class="data-list"></div>
+        </section>
+
+        <section class="screen-panel alerts-panel">
+          <header class="panel-head">
+            <div class="panel-title">
+              <span>告警与通知</span>
+              <em>Alerts</em>
+            </div>
+          </header>
+          <div class="filter-row">
+            <button id="alerts-all" class="active" type="button">全部 0</button>
+            <button id="alerts-high" type="button">高危 0</button>
+            <button id="alerts-mid" type="button">中危 0</button>
+            <button id="alerts-low" type="button">低危 0</button>
+          </div>
+          <div id="alerts-list" class="data-list"></div>
+        </section>
+
+        <section class="screen-panel key-metrics-panel">
+          <header class="panel-head">
+            <div class="panel-title">
+              <span>今日关键指标</span>
+            </div>
+          </header>
+          <div class="metrics-shell">
+            <div id="key-metrics-list" class="key-metrics-list"></div>
+            <svg class="radar-chart" viewBox="0 0 160 160" aria-hidden="true">
+              <polygon class="radar-grid" points="80,8 148,55 122,136 38,136 12,55" />
+              <polygon class="radar-grid small" points="80,36 121,64 106,112 54,112 39,64" />
+              <polygon id="metric-radar-shape" class="radar-shape" points="80,18 138,58 116,128 44,128 22,58" />
+              <circle cx="80" cy="80" r="4" class="radar-core" />
+            </svg>
+          </div>
+        </section>
+      </section>
+    </div>
+  </body>
+</html>

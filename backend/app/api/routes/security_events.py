@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, time, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.response import success
@@ -12,6 +14,7 @@ from ...schemas.event import EventBatchHandle, EventStatusUpdate
 from ...services.ai_endpoints import task_ai_endpoint_snapshot
 from ...services.audit import append_audit_log
 from ...services.authorization import require_roles
+from ...services.cache import cached_payload, invalidate_cache_namespaces
 from ...services.event_status import EVENT_STATUS_SUSPICIOUS, normalize_event_status
 from ...services.guard_trace import build_task_guard_trace
 from ...services.repository import contains_keyword, paginate
@@ -22,7 +25,7 @@ from ...services.security_taxonomy import (
     build_policy_reference_auto,
     build_trigger_sections,
 )
-from ...services.time_utils import format_beijing, utc_now
+from ...services.time_utils import BEIJING_TZ, format_beijing, parse_utc_iso, utc_now
 
 router = APIRouter()
 
@@ -156,6 +159,30 @@ def _filter_security_events(
     return items
 
 
+def _parse_event_filter_datetime(value: str | None, *, end_of_day: bool = False) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        parsed = parse_utc_iso(normalized)
+        if parsed is not None:
+            return parsed.replace(tzinfo=None)
+    except ValueError:
+        pass
+
+    try:
+        if len(normalized) == 10:
+            parsed_date = datetime.strptime(normalized, "%Y-%m-%d").date()
+            parsed_dt = datetime.combine(parsed_date, time.max if end_of_day else time.min, tzinfo=BEIJING_TZ)
+        else:
+            parsed_dt = datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S").replace(tzinfo=BEIJING_TZ)
+        return parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def _get_report_for_task(db: Session, task: AttackTask | None) -> Report | None:
     if task is None:
         return None
@@ -186,19 +213,78 @@ def list_security_events(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    events = db.query(SecurityEvent).order_by(SecurityEvent.created_at.desc(), SecurityEvent.id.desc()).all()
-    task_map = _build_event_task_map(db, events)
-    items = [_serialize_security_event(item, task_map.get(item.task_id or 0)) for item in events]
-    items = _filter_security_events(
-        items,
-        event_type=event_type,
-        event_level=event_level,
-        status=status,
-        keyword=keyword,
-        start_time=start_time,
-        end_time=end_time,
+    def load_payload() -> dict:
+        query = db.query(SecurityEvent)
+        if event_type:
+            query = query.filter(SecurityEvent.event_type == event_type)
+        if event_level:
+            query = query.filter(SecurityEvent.event_level == event_level)
+        if status:
+            normalized_status = normalize_event_status(status, EVENT_STATUS_SUSPICIOUS)
+            query = query.filter(SecurityEvent.status.in_((normalized_status, status)))
+        start_dt = _parse_event_filter_datetime(start_time, end_of_day=False)
+        if start_dt is not None:
+            query = query.filter(SecurityEvent.created_at >= start_dt)
+        end_dt = _parse_event_filter_datetime(end_time, end_of_day=True)
+        if end_dt is not None:
+            query = query.filter(SecurityEvent.created_at <= end_dt)
+        if keyword:
+            search = f"%{keyword.strip()}%"
+            query = query.filter(
+                or_(
+                    SecurityEvent.event_type.ilike(search),
+                    SecurityEvent.source.ilike(search),
+                    SecurityEvent.target.ilike(search),
+                    SecurityEvent.detail.ilike(search),
+                    SecurityEvent.result.ilike(search),
+                )
+            )
+
+        total = query.count()
+        page_items = (
+            query.order_by(SecurityEvent.created_at.desc(), SecurityEvent.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        task_map = _build_event_task_map(db, page_items)
+        items = [_serialize_security_event(item, task_map.get(item.task_id or 0)) for item in page_items]
+        if (start_time and start_dt is None) or (end_time and end_dt is None):
+            items = _filter_security_events(
+                items,
+                event_type=None,
+                event_level=None,
+                status=None,
+                keyword=None,
+                start_time=start_time if start_dt is None else None,
+                end_time=end_time if end_dt is None else None,
+            )
+            total = len(items)
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+    return success(
+        cached_payload(
+            "security_events",
+            key_parts={
+                "route": "list",
+                "page": page,
+                "page_size": page_size,
+                "event_type": event_type,
+                "event_level": event_level,
+                "status": status,
+                "keyword": keyword,
+                "start_time": start_time,
+                "end_time": end_time,
+            },
+            loader=load_payload,
+            ttl_seconds=5,
+        )
     )
-    return success(paginate(items, page=page, page_size=page_size))
 
 
 @router.post("/batch-handle")
@@ -218,6 +304,7 @@ def batch_handle_events(
 
     append_audit_log(db, current_user, "security-events", "batch-handle", f"updated {len(updated_items)} events")
     db.commit()
+    invalidate_cache_namespaces("security_events", "dashboard")
     return success({"items": updated_items, "total": len(updated_items)}, message="batch handled")
 
 
@@ -227,9 +314,19 @@ def get_security_event(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    item = _get_security_event_or_404(db, event_id)
-    task = db.get(AttackTask, item.task_id) if item.task_id else None
-    return success(_serialize_security_event(item, task))
+    def load_payload() -> dict:
+        item = _get_security_event_or_404(db, event_id)
+        task = db.get(AttackTask, item.task_id) if item.task_id else None
+        return _serialize_security_event(item, task)
+
+    return success(
+        cached_payload(
+            "security_events",
+            key_parts={"route": "detail", "event_id": event_id},
+            loader=load_payload,
+            ttl_seconds=10,
+        )
+    )
 
 
 @router.get("/{event_id}/report-view")
@@ -238,18 +335,25 @@ def get_security_event_report_view(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    item = _get_security_event_or_404(db, event_id)
-    task = db.get(AttackTask, item.task_id) if item.task_id else None
-    report = _get_report_for_task(db, task)
-    analytics = build_security_event_report_view(db, event=item, task=task, report=report)
-
-    return success(
-        {
+    def load_payload() -> dict:
+        item = _get_security_event_or_404(db, event_id)
+        task = db.get(AttackTask, item.task_id) if item.task_id else None
+        report = _get_report_for_task(db, task)
+        analytics = build_security_event_report_view(db, event=item, task=task, report=report)
+        return {
             "event": _serialize_security_event(item, task),
             "task": _serialize_attack_task(task),
             "report": _serialize_report(report),
             **analytics,
         }
+
+    return success(
+        cached_payload(
+            "security_events",
+            key_parts={"route": "report_view", "event_id": event_id},
+            loader=load_payload,
+            ttl_seconds=10,
+        )
     )
 
 
@@ -267,5 +371,6 @@ def update_security_event_status(
     append_audit_log(db, current_user, "security-events", "update-status", f"updated event {event_id}")
     db.commit()
     db.refresh(item)
+    invalidate_cache_namespaces("security_events", "dashboard")
     task = db.get(AttackTask, item.task_id) if item.task_id else None
     return success(_serialize_security_event(item, task), message="status updated")

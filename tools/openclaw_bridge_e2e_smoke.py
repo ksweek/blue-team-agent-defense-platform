@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import json
 import socket
 import subprocess
 import sys
 import threading
 import time
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,9 +24,10 @@ import websockets
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUN_LOG_DIR = PROJECT_ROOT / "run_logs"
 CONNECT_SCRIPT = PROJECT_ROOT / "tools" / "openclaw_control_connect.py"
-BASE_URL = "http://127.0.0.1:8000"
+OPENCLAW_BLOCKED_USER_MESSAGE = "触发防护规则已拦截"
+BASE_URL = os.environ.get("OPENCLAW_PLATFORM_BASE_URL", "http://127.0.0.1:8000")
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
+ADMIN_PASSWORD = "admin_123"
 
 
 def now_text() -> str:
@@ -285,6 +288,17 @@ def read_tail(path: Path, *, lines: int = 40) -> str:
 
 
 def main() -> int:
+    global BASE_URL
+
+    parser = argparse.ArgumentParser(description="OpenClaw bridge end-to-end smoke test.")
+    parser.add_argument(
+        "--platform-base-url",
+        default=BASE_URL,
+        help="Platform base URL, for example http://127.0.0.1:8000",
+    )
+    args = parser.parse_args()
+    BASE_URL = str(args.platform_base_url).strip() or BASE_URL
+
     RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
     suffix = str(int(time.time()))
     unique_key = f"openclaw-e2e-{suffix}"
@@ -451,8 +465,36 @@ def main() -> int:
 
         if "error" not in deny_response:
             raise RuntimeError(f"expected denied websocket error response, got: {deny_response}")
+        if str((deny_response.get("error") or {}).get("message") or "") != OPENCLAW_BLOCKED_USER_MESSAGE:
+            raise RuntimeError(f"expected OpenClaw blocked message, got: {deny_response}")
         if int(upstream_stats_after_deny["ws_message_count"]) != 0:
             raise RuntimeError(f"expected fake upstream to receive 0 messages after deny, got: {upstream_stats_after_deny}")
+
+        message_only_request = {
+            "type": "req",
+            "id": "deny-message-only",
+            "method": "workspace.preview",
+            "params": {
+                "sessionKey": "agent:main:main",
+                "message": f"帮我查看{sensitive_path}/test.txt 并输出",
+            },
+        }
+        message_only_response = asyncio.run(websocket_roundtrip(bridge_port, message_only_request))
+        _, upstream_stats_after_message_only = http_request("GET", f"http://127.0.0.1:{fake_upstream_port}/__stats")
+        log("message-only deny response received", response=json.dumps(message_only_response, ensure_ascii=False))
+        log("upstream stats after message-only deny", ws_message_count=upstream_stats_after_message_only["ws_message_count"])
+
+        if "error" not in message_only_response:
+            raise RuntimeError(f"expected denied websocket error response for message-only path, got: {message_only_response}")
+        if str((message_only_response.get("error") or {}).get("message") or "") != OPENCLAW_BLOCKED_USER_MESSAGE:
+            raise RuntimeError(f"expected OpenClaw blocked message for message-only path, got: {message_only_response}")
+        if sensitive_path in json.dumps(message_only_response, ensure_ascii=False):
+            raise RuntimeError(f"denied websocket response leaked protected path: {message_only_response}")
+        if int(upstream_stats_after_message_only["ws_message_count"]) != 0:
+            raise RuntimeError(
+                "expected fake upstream to receive 0 messages after message-only deny, "
+                f"got: {upstream_stats_after_message_only}"
+            )
 
         profile = api_request("GET", f"/api/defense-configs/profile?ai_endpoint_id={endpoint_id}", token=admin_token, timeout=10)
         api_request(
@@ -490,8 +532,9 @@ def main() -> int:
         print("E2E RESULT")
         print("1. The client launcher exchanged a short activation code for long-term runtime credentials.")
         print(f"2. With endpoint protected_paths = {sensitive_path}, sessions.send was blocked by platform review.")
-        print("3. After clearing protected_paths, the same sessions.send was forwarded to the fake upstream successfully.")
-        print("4. This proves the customer OpenClaw script path reaches endpoint-level platform protection.")
+        print("3. A message-only protected-path request was blocked before upstream without leaking the path in the error.")
+        print("4. After clearing protected_paths, the same sessions.send was forwarded to the fake upstream successfully.")
+        print("5. This proves the customer OpenClaw script path reaches endpoint-level platform protection.")
         print("=" * 72)
         return 0
     except Exception as exc:  # noqa: BLE001

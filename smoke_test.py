@@ -232,7 +232,7 @@ def main():
     status, admin_login = request(
         "POST",
         f"{BASE_BACKEND}/api/auth/login",
-        {"username": "admin", "password": "admin123"},
+        {"username": "admin", "password": "admin_123"},
     )
     admin_token = admin_login["data"]["access_token"]
     assert_ok("admin-login", status == 200 and bool(admin_token), admin_login["data"]["user"]["username"])

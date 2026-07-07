@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.response import success
@@ -13,6 +14,7 @@ from ...models import AttackTask, Report, SecurityEvent, User
 from ...schemas.task import ReportBatchDownloadRequest
 from ...services.audit import append_audit_log
 from ...services.authorization import require_roles
+from ...services.cache import cached_payload, invalidate_cache_namespaces
 from ...services.report_bundle import build_task_report_bundle
 from ...services.report_export import (
     DEFAULT_REPORT_EXPORT_FORMAT,
@@ -31,19 +33,34 @@ router = APIRouter()
 
 
 def _serialize_report(item: Report) -> dict:
-    artifact_path = resolve_report_path(item.file_path)
+    artifact_path: Path | None
+    artifact_exists = False
     available_formats: list[str] = []
-    for artifact_format in SUPPORTED_REPORT_FORMATS:
-        variant_path = artifact_path if artifact_format == DEFAULT_REPORT_EXPORT_FORMAT else derive_report_variant_path(item.file_path, artifact_format)
-        if variant_path.exists():
-            available_formats.append(artifact_format)
+    artifact_path_error = ""
+    try:
+        artifact_path = resolve_report_path(item.file_path)
+        artifact_exists = artifact_path.exists()
+        for artifact_format in SUPPORTED_REPORT_FORMATS:
+            variant_path = (
+                artifact_path
+                if artifact_format == DEFAULT_REPORT_EXPORT_FORMAT
+                else derive_report_variant_path(item.file_path, artifact_format)
+            )
+            if variant_path.exists():
+                available_formats.append(artifact_format)
+    except ValueError as exc:
+        artifact_path = None
+        artifact_path_error = str(exc)
+
     return {
         "id": item.id,
         "report_name": item.report_name,
         "report_type": item.report_type,
         "task_id": item.task_id,
         "file_path": item.file_path,
-        "artifact_exists": artifact_path.exists(),
+        "artifact_exists": artifact_exists,
+        "artifact_path_valid": artifact_path is not None,
+        "artifact_path_error": artifact_path_error,
         "download_url": f"/api/reports/{item.id}/download",
         "download_urls": {
             artifact_format: f"/api/reports/{item.id}/download?format={artifact_format}"
@@ -131,16 +148,51 @@ def list_reports(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    items = [_serialize_report(item) for item in db.query(Report).order_by(Report.created_at.desc(), Report.id.desc()).all()]
+    def load_payload() -> dict:
+        query = db.query(Report)
+        if report_type:
+            query = query.filter(Report.report_type == report_type)
+        if task_id is not None:
+            query = query.filter(Report.task_id == task_id)
+        if keyword:
+            search = f"%{keyword.strip()}%"
+            query = query.filter(
+                or_(
+                    Report.report_name.ilike(search),
+                    Report.report_type.ilike(search),
+                    Report.file_path.ilike(search),
+                )
+            )
 
-    if report_type:
-        items = [item for item in items if item["report_type"] == report_type]
-    if task_id is not None:
-        items = [item for item in items if item["task_id"] == task_id]
-    if keyword:
-        items = [item for item in items if contains_keyword(item, keyword, ["report_name", "report_type", "file_path"])]
+        total = query.count()
+        page_items = (
+            query.order_by(Report.created_at.desc(), Report.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return {
+            "items": [_serialize_report(item) for item in page_items],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
 
-    return success(paginate(items, page=page, page_size=page_size))
+    return success(
+        cached_payload(
+            "reports",
+            key_parts={
+                "route": "list",
+                "page": page,
+                "page_size": page_size,
+                "report_type": report_type,
+                "task_id": task_id,
+                "keyword": keyword,
+            },
+            loader=load_payload,
+            ttl_seconds=15,
+        )
+    )
 
 
 @router.get("/{report_id}")
@@ -149,8 +201,17 @@ def get_report(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    item = _get_report_or_404(db, report_id)
-    return success(_serialize_report(item))
+    def load_payload() -> dict:
+        return _serialize_report(_get_report_or_404(db, report_id))
+
+    return success(
+        cached_payload(
+            "reports",
+            key_parts={"route": "detail", "report_id": report_id},
+            loader=load_payload,
+            ttl_seconds=15,
+        )
+    )
 
 
 @router.post("/{report_id}/export")
@@ -180,6 +241,7 @@ def export_report(
     append_audit_log(db, current_user, "reports", "export", f"exported report {item.id} as {normalized_format}")
     db.commit()
     db.refresh(item)
+    invalidate_cache_namespaces("reports")
     return success(
         {
             **_serialize_report(item),
@@ -203,12 +265,17 @@ def download_report(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     item = _get_report_or_404(db, report_id)
-    artifact_path = (
-        resolve_report_path(item.file_path)
-        if normalized_format == DEFAULT_REPORT_EXPORT_FORMAT
-        else derive_report_variant_path(item.file_path, normalized_format)
-    )
-    if not artifact_path.exists():
+    artifact_path: Path | None
+    try:
+        artifact_path = (
+            resolve_report_path(item.file_path)
+            if normalized_format == DEFAULT_REPORT_EXPORT_FORMAT
+            else derive_report_variant_path(item.file_path, normalized_format)
+        )
+    except ValueError:
+        artifact_path = None
+
+    if artifact_path is None or not artifact_path.is_file():
         task = _get_task_or_404(db, item.task_id)
         event = _get_latest_event_for_task(db, task.id)
         try:

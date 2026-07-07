@@ -31,33 +31,11 @@ type TrendInsight = TrendItem & {
   previousDay: string | null
   metricDeltas: Record<TrendMetricKey, number | null>
 }
-
-const surfaceItems = [
-  {
-    title: '提示注入',
-    tag: '高危',
-    tone: 'danger' as Tone,
-    detail: '覆盖直接注入、间接注入、多轮污染和组合式攻击链。'
-  },
-  {
-    title: '越权调用',
-    tag: '高危',
-    tone: 'danger' as Tone,
-    detail: '关注未授权工具、受保护路径、技能与插件链调用。'
-  },
-  {
-    title: '权限绕过',
-    tag: '中高',
-    tone: 'warn' as Tone,
-    detail: '重点观察角色借用、审批绕过和跨插件联动失控。'
-  },
-  {
-    title: '输出泄露',
-    tag: '中高',
-    tone: 'warn' as Tone,
-    detail: '核查原始响应、敏感数据脱敏和回传内容暴露风险。'
-  },
-] as const
+type TrendChartPoint = TrendInsight & {
+  x: number
+  xPercent: number
+  positions: Record<TrendMetricKey, number>
+}
 
 const eventSortOptions = [
   { key: 'latest', label: '最新' },
@@ -85,6 +63,14 @@ const overview = computed(() => ({
   activeTaskCount: data.value?.overview.active_task_count ?? 0,
 }))
 
+const overviewStatItems = computed(() => [
+  { label: '攻击', value: overview.value.attackCount, tone: 'danger' as Tone, detail: '累计攻击触发' },
+  { label: '拦截', value: overview.value.blockedCount, tone: 'safe' as Tone, detail: '已阻断高风险请求' },
+  { label: '高危', value: overview.value.highRiskCount, tone: 'warn' as Tone, detail: '待优先处置事件' },
+  { label: '防线', value: overview.value.defenseCount, tone: 'info' as Tone, detail: '当前启用策略数量' },
+  { label: '活跃', value: overview.value.activeTaskCount, tone: 'warn' as Tone, detail: '运行中的任务与联动' },
+])
+
 const heroTone = computed<Tone>(() => {
   if (overview.value.highRiskCount >= 6) return 'danger'
   if (overview.value.highRiskCount >= 2 || overview.value.activeTaskCount >= 3) return 'warn'
@@ -93,7 +79,17 @@ const heroTone = computed<Tone>(() => {
 
 const sessionCards = computed(() => data.value?.sessions.items ?? [])
 const sessionPreview = computed(() => sessionCards.value.slice(0, 5))
-const sessionOverflowCount = computed(() => Math.max(sessionCards.value.length - sessionPreview.value.length, 0))
+const highRiskSessionCount = computed(
+  () => sessionCards.value.filter((item) => normalizeLevel(item.risk_level) === 'high').length,
+)
+const sessionSummaryLead = computed(() => {
+  const focus = sessionPreview.value[0]
+  if (!focus) {
+    return '最近没有运行态联动会话。'
+  }
+
+  return `最近 ${sessionCards.value.length} 条会话中，高危 ${highRiskSessionCount.value} 条；最新会话为 ${focus.session_name}。`
+})
 
 const trendSeries = computed<TrendItem[]>(() => data.value?.trends.items ?? [])
 const trendInsights = computed<TrendInsight[]>(() =>
@@ -118,7 +114,12 @@ const trendInsights = computed<TrendInsight[]>(() =>
 const totalTrendAttack = computed(() => trendSeries.value.reduce((sum, item) => sum + item.attack, 0))
 const totalTrendBlock = computed(() => trendSeries.value.reduce((sum, item) => sum + item.block, 0))
 const totalTrendFalsePositive = computed(() => trendSeries.value.reduce((sum, item) => sum + item.false_positive, 0))
-const maxTrendTotal = computed(() => Math.max(1, ...trendInsights.value.map((item) => item.total)))
+const trendMetricMax = computed(() =>
+  Math.max(
+    1,
+    ...trendInsights.value.map((item) => Math.max(item.attack, item.block, item.false_positive)),
+  ),
+)
 const trendPeakDay = computed(() => {
   if (!trendInsights.value.length) {
     return null
@@ -146,6 +147,44 @@ const trendAnomalySummary = computed(() => {
 
   return trendAnomalyDays.value.map((item) => compactDayLabel(item.day)).join(' / ')
 })
+const trendChartHeight = 156
+const trendChartWidth = 1000
+const trendChartPaddingX = 40
+const trendChartPaddingY = 14
+const trendChartPlotWidth = trendChartWidth - trendChartPaddingX * 2
+const trendChartPlotHeight = trendChartHeight - trendChartPaddingY * 2
+const trendGridValues = computed(() => {
+  const ceiling = trendMetricMax.value
+  return [1, 0.5].map((ratio) => Math.round(ceiling * ratio))
+})
+const trendChartPoints = computed<TrendChartPoint[]>(() => {
+  const items = trendInsights.value
+  if (!items.length) {
+    return []
+  }
+
+  const slotWidth = items.length > 1 ? trendChartPlotWidth / (items.length - 1) : trendChartPlotWidth
+
+  return items.map((item, index) => {
+    const x = items.length > 1 ? trendChartPaddingX + slotWidth * index : trendChartWidth / 2
+
+    return {
+      ...item,
+      x,
+      xPercent: (x / trendChartWidth) * 100,
+      positions: {
+        attack: trendChartY(item.attack),
+        block: trendChartY(item.block),
+        false_positive: trendChartY(item.false_positive),
+      },
+    }
+  })
+})
+const trendLinePaths = computed<Record<TrendMetricKey, string>>(() => ({
+  attack: buildTrendPolyline('attack'),
+  block: buildTrendPolyline('block'),
+  false_positive: buildTrendPolyline('false_positive'),
+}))
 
 const dashboardEvents = computed<DashboardEvent[]>(() => data.value?.events.items ?? [])
 const recentEvents = computed(() => {
@@ -160,6 +199,15 @@ const blockedRecentEvents = computed(
 const highRiskRecentEvents = computed(
   () => recentEvents.value.filter((item) => normalizeLevel(item.event_level) === 'high').length,
 )
+const eventSummaryLead = computed(() => {
+  const focus = recentEvents.value[0]
+  if (!focus) {
+    return '最近没有需要处置的安全事件。'
+  }
+
+  const blockedText = blockedRecentEvents.value > 0 ? `已拦截 ${blockedRecentEvents.value} 条` : '暂无拦截事件'
+  return `最近 ${recentEvents.value.length} 条事件中，高危 ${highRiskRecentEvents.value} 条，${blockedText}；最新事件为 ${eventTypeLabel(focus.event_type)}。`
+})
 
 function normalizeLevel(level: string) {
   const lowered = level.toLowerCase()
@@ -180,17 +228,54 @@ function levelLabel(level: string) {
   return '低危'
 }
 
+function shouldShowEventLevel(event: DashboardEvent) {
+  return !(normalizeEventStatus(event.status) === 'allowed' && normalizeLevel(event.event_level) === 'low')
+}
+
+function normalizeRuntimeStatus(status: string) {
+  const lowered = status.trim().toLowerCase()
+  if (lowered === 'failed' || lowered === 'failure' || lowered === 'error') return 'failed'
+  if (lowered === 'done' || lowered === 'completed' || lowered === 'success') return 'done'
+  if (lowered === 'running') return 'running'
+  if (lowered === 'queued') return 'queued'
+  return lowered
+}
+
+function shouldShowSessionStatus(status: string) {
+  return normalizeRuntimeStatus(status) !== 'failed'
+}
+
+function sessionFlowTone(status: string, riskLevel: string): Tone {
+  if (shouldShowSessionStatus(status)) {
+    return statusTone(status)
+  }
+
+  return levelTone(riskLevel)
+}
+
+function sessionFlowText(status: string, riskLevel: string) {
+  if (shouldShowSessionStatus(status)) {
+    return `${levelLabel(riskLevel)} / ${statusLabel(status)}`
+  }
+
+  return levelLabel(riskLevel)
+}
+
 function statusTone(status: string): Tone {
-  if (status === 'running') return 'warn'
-  if (status === 'queued') return 'info'
-  if (status === 'done') return 'safe'
+  const normalized = normalizeRuntimeStatus(status)
+  if (normalized === 'failed') return 'danger'
+  if (normalized === 'running') return 'warn'
+  if (normalized === 'queued') return 'info'
+  if (normalized === 'done') return 'safe'
   return eventStatusTone(status)
 }
 
 function statusLabel(status: string) {
-  if (status === 'running') return '运行中'
-  if (status === 'queued') return '排队中'
-  if (status === 'done') return '已完成'
+  const normalized = normalizeRuntimeStatus(status)
+  if (normalized === 'failed') return '失败'
+  if (normalized === 'running') return '运行中'
+  if (normalized === 'queued') return '排队中'
+  if (normalized === 'done') return '已完成'
   return eventStatusLabel(status)
 }
 
@@ -254,22 +339,6 @@ function buildTrendThreshold(values: number[]) {
   }
 
   return Math.max(1, Math.ceil(average + deviation * 0.6))
-}
-
-function trendTotalFillWidth(total: number) {
-  if (!total) {
-    return '0%'
-  }
-
-  return `${Math.max(10, (total / maxTrendTotal.value) * 100)}%`
-}
-
-function trendMetricWidth(value: number, total: number) {
-  if (!value || !total) {
-    return '0%'
-  }
-
-  return `${(value / total) * 100}%`
 }
 
 function isTrendPeakDay(day: string) {
@@ -367,11 +436,37 @@ function trendTooltipPlacement(index: number, total: number) {
   return ''
 }
 
+function trendChartY(value: number) {
+  if (trendMetricMax.value <= 0) {
+    return trendChartHeight - trendChartPaddingY
+  }
+
+  const ratio = value / trendMetricMax.value
+  return trendChartHeight - trendChartPaddingY - ratio * trendChartPlotHeight
+}
+
+function buildTrendPolyline(key: TrendMetricKey) {
+  return trendChartPoints.value.map((point) => `${point.x},${point.positions[key]}`).join(' ')
+}
+
+function trendHotspotStyle(point: TrendChartPoint, total: number) {
+  const widthPercent = total > 1 ? Math.min(18, Math.max(10, 100 / total)) : 100
+
+  return {
+    left: `${point.xPercent}%`,
+    width: `${widthPercent}%`,
+  }
+}
+
 function compactDayLabel(day: string) {
   if (day.includes('-')) {
     return day.split('-').slice(1).join('/')
   }
   return day
+}
+
+function formatOverviewValue(value: number) {
+  return value.toLocaleString('zh-CN')
 }
 </script>
 
@@ -382,21 +477,13 @@ function compactDayLabel(day: string) {
         <div class="dashboard-hero-copy">
           <div class="dashboard-hero-head">
             <div class="dashboard-hero-brand">
-              <p class="eyebrow">GuardianAgent</p>
-              <h1 class="dashboard-hero-title">面向 Function-Calling Agent 的多维AI防御与评估平台</h1>
+              <h1 class="dashboard-hero-title">GuardianAgent</h1>
             </div>
-            <StatusPill :label="heroTone === 'danger' ? '高压态势' : heroTone === 'warn' ? '波动中' : '运行平稳'" :tone="heroTone" />
           </div>
           <p class="dashboard-hero-summary">
-            统一承接受保护 AI 的运行时流量，对提示注入、工具调用、MCP 能力和关键资产访问进行前置审查、记录与处置。
+            面向 Function-Calling Agent 的多维AI防御与评估平台
           </p>
           <div class="dashboard-hero-footer">
-            <div class="dashboard-hero-meta">
-              <span>OpenClaw 接入保护</span>
-              <span>Skill 扫描</span>
-              <span>MCP 策略约束</span>
-              <span>攻击验证闭环</span>
-            </div>
             <div class="dashboard-hero-actions">
               <RouterLink class="primary-button" to="/security-events">进入事件处置</RouterLink>
               <RouterLink class="ghost-button" to="/ai-endpoints">目标治理</RouterLink>
@@ -405,185 +492,223 @@ function compactDayLabel(day: string) {
         </div>
       </article>
 
+      <section class="dashboard-runtime-panel">
+        <div class="dashboard-runtime-head">
+          <span>运行态</span>
+          <strong>防御总览</strong>
+        </div>
+        <div class="dashboard-stat-strip">
+          <article
+            v-for="item in overviewStatItems"
+            :key="item.label"
+            :class="['dashboard-stat-card', `tone-${item.tone}`]"
+          >
+            <span>{{ item.label }}</span>
+            <strong>{{ formatOverviewValue(item.value) }}</strong>
+            <small>{{ item.detail }}</small>
+          </article>
+        </div>
+      </section>
+
     </section>
 
     <section class="dashboard-main-grid">
       <PageSection class="dashboard-panel-trend" eyebrow="趋势" title="近 7 日攻击趋势" tone="warn">
-        <template #actions>
-          <div class="dashboard-trend-summary-line">
-            <span class="dashboard-trend-summary-item danger">攻击 {{ totalTrendAttack }}</span>
-            <span class="dashboard-trend-summary-item safe">拦截 {{ totalTrendBlock }}</span>
-            <span class="dashboard-trend-summary-item warn">放行 {{ totalTrendFalsePositive }}</span>
-            <span class="dashboard-trend-summary-item neutral">异常日 {{ trendAnomalyDays.length }}</span>
-          </div>
-        </template>
-
         <div v-if="trendSeries.length" class="dashboard-trend-band merged">
+          <div class="dashboard-trend-compact-head">
+            <div class="dashboard-trend-titleline">
+              <span>趋势</span>
+              <strong>近 7 日攻击趋势</strong>
+            </div>
+            <div class="dashboard-trend-summary-line compact">
+              <span class="dashboard-trend-summary-item danger">攻击 {{ totalTrendAttack }}</span>
+              <span class="dashboard-trend-summary-item safe">拦截 {{ totalTrendBlock }}</span>
+              <span class="dashboard-trend-summary-item warn">放行 {{ totalTrendFalsePositive }}</span>
+              <span class="dashboard-trend-summary-item neutral">异常日 {{ trendAnomalyDays.length }}</span>
+            </div>
+          </div>
 
-          <div class="dashboard-trend-strip-track">
-            <div
-              v-for="(item, index) in trendInsights"
-              :key="`day-${item.day}`"
-              :class="[
-                'dashboard-trend-strip-item',
-                { 'is-peak': isTrendPeakDay(item.day), 'is-anomaly': isTrendAnomalyDay(item) },
-              ]"
-              tabindex="0"
-            >
-              <span class="dashboard-trend-strip-day">{{ compactDayLabel(item.day) }}</span>
-              <div class="dashboard-trend-strip-meter">
-                <div class="dashboard-trend-strip-fill" :style="{ width: trendTotalFillWidth(item.total) }">
-                  <span class="dashboard-trend-strip-segment danger" :style="{ width: trendMetricWidth(item.attack, item.total) }"></span>
-                  <span class="dashboard-trend-strip-segment safe" :style="{ width: trendMetricWidth(item.block, item.total) }"></span>
-                  <span class="dashboard-trend-strip-segment warn" :style="{ width: trendMetricWidth(item.false_positive, item.total) }"></span>
-                </div>
-              </div>
-              <span
-                v-if="isTrendAnomalyDay(item) && item.totalDelta !== null"
-                :class="['dashboard-trend-strip-corner', 'dashboard-trend-delta-chip', 'compact', `tone-${trendDeltaTone(item.totalDelta)}`]"
+          <div class="dashboard-trend-line-shell">
+            <div class="dashboard-trend-line-axis">
+              <span v-for="(value, index) in trendGridValues" :key="`grid-label-${index}`">{{ value }}</span>
+              <span>0</span>
+            </div>
+
+            <div class="dashboard-trend-line-panel">
+              <svg
+                class="dashboard-trend-line-chart"
+                :viewBox="`0 0 ${trendChartWidth} ${trendChartHeight}`"
+                preserveAspectRatio="none"
+                aria-hidden="true"
               >
-                {{ formatSignedDelta(item.totalDelta) }}
-              </span>
-              <div :class="['dashboard-trend-tooltip', 'compact', trendTooltipPlacement(index, trendInsights.length)]">
-                <div class="dashboard-trend-tooltip-head">
-                  <strong>{{ item.day }}</strong>
-                  <span :class="['dashboard-trend-delta-chip', `tone-${trendDeltaTone(item.totalDelta)}`]">
-                    {{ trendDeltaSummary(item.totalDelta, item.previousDay) }}
-                  </span>
-                </div>
-                <p>总量 {{ item.total }}</p>
-                <div class="dashboard-trend-tooltip-metrics">
-                  <div class="dashboard-trend-tooltip-metric">
-                    <span>攻击</span>
-                    <strong>{{ item.attack }}</strong>
-                    <em :class="`tone-${trendDeltaTone(item.metricDeltas.attack, 'attack')}`">
-                      {{ formatSignedDelta(item.metricDeltas.attack) }}
-                    </em>
-                  </div>
-                  <div class="dashboard-trend-tooltip-metric">
-                    <span>拦截</span>
-                    <strong>{{ item.block }}</strong>
-                    <em :class="`tone-${trendDeltaTone(item.metricDeltas.block, 'block')}`">
-                      {{ formatSignedDelta(item.metricDeltas.block) }}
-                    </em>
-                  </div>
-                  <div class="dashboard-trend-tooltip-metric">
-                    <span>放行</span>
-                    <strong>{{ item.false_positive }}</strong>
-                    <em :class="`tone-${trendDeltaTone(item.metricDeltas.false_positive, 'false_positive')}`">
-                      {{ formatSignedDelta(item.metricDeltas.false_positive) }}
-                    </em>
-                  </div>
-                </div>
-                <div v-if="isTrendAnomalyDay(item)" class="dashboard-trend-tooltip-tags">
+                <g class="dashboard-trend-grid">
+                  <line
+                    v-for="(value, index) in trendGridValues"
+                    :key="`line-${index}`"
+                    :x1="trendChartPaddingX"
+                    :x2="trendChartWidth - trendChartPaddingX"
+                    :y1="trendChartY(value)"
+                    :y2="trendChartY(value)"
+                  />
+                  <line
+                    :x1="trendChartPaddingX"
+                    :x2="trendChartWidth - trendChartPaddingX"
+                    :y1="trendChartHeight - trendChartPaddingY"
+                    :y2="trendChartHeight - trendChartPaddingY"
+                  />
+                </g>
+
+                <g class="dashboard-trend-series">
+                  <polyline class="dashboard-trend-line danger" :points="trendLinePaths.attack" />
+                  <polyline class="dashboard-trend-line safe" :points="trendLinePaths.block" />
+                  <polyline class="dashboard-trend-line warn" :points="trendLinePaths.false_positive" />
+                </g>
+
+                <g
+                  v-for="point in trendChartPoints"
+                  :key="`markers-${point.day}`"
+                  class="dashboard-trend-marker-cluster"
+                >
+                  <circle :cx="point.x" :cy="point.positions.attack" r="3" class="dashboard-trend-marker danger" />
+                  <circle :cx="point.x" :cy="point.positions.block" r="3" class="dashboard-trend-marker safe" />
+                  <circle :cx="point.x" :cy="point.positions.false_positive" r="3" class="dashboard-trend-marker warn" />
+                </g>
+              </svg>
+
+              <div class="dashboard-trend-hotspot-layer">
+                <div
+                  v-for="(item, index) in trendChartPoints"
+                  :key="`hotspot-${item.day}`"
+                  :class="[
+                    'dashboard-trend-hotspot',
+                    { 'is-peak': isTrendPeakDay(item.day), 'is-anomaly': isTrendAnomalyDay(item) },
+                  ]"
+                  :style="trendHotspotStyle(item, trendChartPoints.length)"
+                  tabindex="0"
+                >
+                  <span class="dashboard-trend-hotspot-stem"></span>
                   <span
-                    v-for="reason in trendAnomalyReasons(item)"
-                    :key="`${item.day}-${reason}`"
+                    v-if="isTrendAnomalyDay(item) && item.totalDelta !== null"
+                    :class="['dashboard-trend-strip-corner', 'dashboard-trend-delta-chip', 'compact', `tone-${trendDeltaTone(item.totalDelta)}`]"
                   >
-                    {{ reason }}
+                    {{ formatSignedDelta(item.totalDelta) }}
                   </span>
+                  <div :class="['dashboard-trend-tooltip', 'compact', trendTooltipPlacement(index, trendChartPoints.length)]">
+                    <div class="dashboard-trend-tooltip-head">
+                      <strong>{{ item.day }}</strong>
+                      <span :class="['dashboard-trend-delta-chip', `tone-${trendDeltaTone(item.totalDelta)}`]">
+                        {{ trendDeltaSummary(item.totalDelta, item.previousDay) }}
+                      </span>
+                    </div>
+                    <p>总量 {{ item.total }}</p>
+                    <div class="dashboard-trend-tooltip-metrics">
+                      <div class="dashboard-trend-tooltip-metric">
+                        <span>攻击</span>
+                        <strong>{{ item.attack }}</strong>
+                        <em :class="`tone-${trendDeltaTone(item.metricDeltas.attack, 'attack')}`">
+                          {{ formatSignedDelta(item.metricDeltas.attack) }}
+                        </em>
+                      </div>
+                      <div class="dashboard-trend-tooltip-metric">
+                        <span>拦截</span>
+                        <strong>{{ item.block }}</strong>
+                        <em :class="`tone-${trendDeltaTone(item.metricDeltas.block, 'block')}`">
+                          {{ formatSignedDelta(item.metricDeltas.block) }}
+                        </em>
+                      </div>
+                      <div class="dashboard-trend-tooltip-metric">
+                        <span>放行</span>
+                        <strong>{{ item.false_positive }}</strong>
+                        <em :class="`tone-${trendDeltaTone(item.metricDeltas.false_positive, 'false_positive')}`">
+                          {{ formatSignedDelta(item.metricDeltas.false_positive) }}
+                        </em>
+                      </div>
+                    </div>
+                    <div v-if="isTrendAnomalyDay(item)" class="dashboard-trend-tooltip-tags">
+                      <span
+                        v-for="reason in trendAnomalyReasons(item)"
+                        :key="`${item.day}-${reason}`"
+                      >
+                        {{ reason }}
+                      </span>
+                    </div>
+                  </div>
+                  <span class="dashboard-trend-hotspot-day">{{ compactDayLabel(item.day) }}</span>
                 </div>
               </div>
             </div>
           </div>
-
         </div>
         <div v-else class="empty-state">暂无趋势数据。</div>
       </PageSection>
 
       <section class="dashboard-main-columns">
         <div class="dashboard-main-column dashboard-main-column-primary">
-          <PageSection
-            class="dashboard-panel-surface"
-            eyebrow="防线"
-            title="当前重点风险面"
-            :tag="`${surfaceItems.length} 类`"
-            tone="danger"
-          >
-            <div class="dashboard-surface-grid compact">
-              <article
-                v-for="item in surfaceItems"
-                :key="item.title"
-                :class="['dashboard-surface-card', `tone-${item.tone}`]"
-              >
-                <div class="card-head">
-                  <h4>{{ item.title }}</h4>
-                  <StatusPill :label="item.tag" :tone="item.tone" />
-                </div>
-              </article>
-            </div>
-          </PageSection>
-
           <PageSection class="dashboard-panel-events" eyebrow="事件" title="最近安全事件" tag="重点告警" tone="danger">
-            <template #actions>
-              <RouterLink class="ghost-button small" to="/security-events">进入事件处置</RouterLink>
-            </template>
-
-            <template #toolbar>
-              <div class="section-toolbar">
-                <div class="section-toolbar-copy">
-                  <h4>事件焦点</h4>
-                  <div class="section-toolbar-meta">
-                    <StatusPill :label="`${recentEvents.length} 条`" tone="danger" />
-                    <StatusPill :label="`高危 ${highRiskRecentEvents}`" tone="warn" />
-                    <StatusPill :label="`拦截 ${blockedRecentEvents}`" tone="safe" />
-                  </div>
-                </div>
-                <div class="section-toolbar-actions">
-                  <div class="dashboard-sort-switch" role="tablist" aria-label="事件排序">
-                    <button
-                      v-for="option in eventSortOptions"
-                      :key="option.key"
-                      :class="['dashboard-sort-button', { active: eventSortMode === option.key }]"
-                      type="button"
-                      @click="eventSortMode = option.key"
-                    >
-                      {{ option.label }}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </template>
-
             <div v-if="loading" class="empty-state">正在汇总最近事件...</div>
             <div v-else-if="error" class="empty-state">
               <p>事件加载失败：{{ error }}</p>
               <button class="ghost-button" type="button" @click="refresh">重试</button>
             </div>
-            <div v-else-if="recentEvents.length" class="dashboard-event-list dashboard-table-list">
-              <div class="dashboard-table-head dashboard-event-row">
-                <span>级</span>
-                <span>事件类型</span>
-                <span>源 / 目标</span>
-                <span>摘要</span>
-                <span>处置状态</span>
-                <span>时间</span>
+            <div v-else-if="recentEvents.length" class="dashboard-event-summary-card">
+              <div class="dashboard-event-summary-head">
+                <div class="dashboard-event-summary-title">
+                  <span>事件</span>
+                  <strong>最近安全事件</strong>
+                  <StatusPill label="重点告警" tone="danger" />
+                </div>
+                <RouterLink class="ghost-button small" to="/security-events">进入事件处置</RouterLink>
               </div>
-              <RouterLink
-                v-for="event in recentEvents"
-                :key="`${event.id}-${event.created_at}`"
-                class="dashboard-event-row dashboard-table-row"
-                to="/security-events"
-              >
-                <div class="dashboard-table-cell dashboard-event-row-severity" :title="levelLabel(event.event_level)">
-                  <span :class="['dashboard-severity-strip', `tone-${levelTone(event.event_level)}`]"></span>
+
+              <div class="dashboard-event-summary-toolbar">
+                <div class="dashboard-event-summary-metrics">
+                  <span class="dashboard-event-summary-metric danger">{{ recentEvents.length }} 条</span>
+                  <span class="dashboard-event-summary-metric warn">高危 {{ highRiskRecentEvents }}</span>
+                  <span class="dashboard-event-summary-metric safe">拦截 {{ blockedRecentEvents }}</span>
                 </div>
-                <div class="dashboard-table-cell dashboard-event-row-copy">
-                  <strong>{{ eventTypeLabel(event.event_type) }}</strong>
+                <div class="dashboard-sort-switch dashboard-event-sort-switch compact" role="tablist" aria-label="事件排序">
+                  <button
+                    v-for="option in eventSortOptions"
+                    :key="option.key"
+                    :class="['dashboard-sort-button', { active: eventSortMode === option.key }]"
+                    type="button"
+                    @click="eventSortMode = option.key"
+                  >
+                    {{ option.label }}
+                  </button>
                 </div>
-                <div class="dashboard-table-cell dashboard-event-row-route">
-                  <span>{{ event.source }}</span>
-                  <small>{{ event.target }}</small>
+              </div>
+
+              <RouterLink class="dashboard-event-summary-body" to="/security-events">
+                <div class="dashboard-event-summary-copy">
+                  <span>事件焦点</span>
+                  <strong>{{ eventSummaryLead }}</strong>
+                  <p>{{ recentEvents[0].source }} / {{ recentEvents[0].target }}：{{ recentEvents[0].detail }}</p>
                 </div>
-                <div class="dashboard-table-cell dashboard-event-row-detail-cell">
-                  <p class="dashboard-event-row-detail">{{ event.detail }}</p>
-                </div>
-                <div class="dashboard-table-cell dashboard-event-row-meta">
-                  <StatusPill :label="levelLabel(event.event_level)" :tone="levelTone(event.event_level)" />
-                  <StatusPill :label="statusLabel(event.status)" :tone="statusTone(event.status)" />
-                </div>
-                <div class="dashboard-table-cell dashboard-event-row-time">
-                  <span>{{ event.created_at }}</span>
+
+                <div class="dashboard-event-flow">
+                  <article
+                    v-for="event in recentEvents"
+                    :key="`${event.id}-${event.created_at}`"
+                    class="dashboard-event-flow-item"
+                  >
+                    <span :class="['dashboard-event-flow-dot', `tone-${levelTone(event.event_level)}`]"></span>
+                    <div class="dashboard-event-flow-main">
+                      <div class="dashboard-event-flow-line">
+                        <strong>{{ eventTypeLabel(event.event_type) }}</strong>
+                        <span>{{ event.created_at }}</span>
+                      </div>
+                      <p>{{ event.source }} / {{ event.target }}：{{ event.detail }}</p>
+                    </div>
+                    <div class="dashboard-event-flow-status">
+                      <StatusPill
+                        v-if="shouldShowEventLevel(event)"
+                        :label="levelLabel(event.event_level)"
+                        :tone="levelTone(event.event_level)"
+                      />
+                      <StatusPill :label="statusLabel(event.status)" :tone="statusTone(event.status)" />
+                    </div>
+                  </article>
                 </div>
               </RouterLink>
             </div>
@@ -593,23 +718,6 @@ function compactDayLabel(day: string) {
 
         <div class="dashboard-main-column dashboard-main-column-side">
           <PageSection class="dashboard-panel-sessions" eyebrow="联动" title="最近联动会话" tag="运行态" tone="info">
-            <template #actions>
-              <button class="ghost-button small" type="button" @click="refresh">刷新</button>
-            </template>
-
-            <template #toolbar>
-              <div class="section-toolbar">
-                <div class="section-toolbar-copy">
-                  <h4>会话快照</h4>
-                  <div class="section-toolbar-meta">
-                    <StatusPill :label="`${sessionCards.length} 条`" tone="info" />
-                    <span v-if="sessionOverflowCount">另有 {{ sessionOverflowCount }} 条未展开</span>
-                    <span v-else>展示最近运行态变化</span>
-                  </div>
-                </div>
-              </div>
-            </template>
-
             <div v-if="loading" class="dashboard-session-list">
               <div class="dashboard-session-card muted">
                 <strong>加载中</strong>
@@ -626,52 +734,57 @@ function compactDayLabel(day: string) {
                 <strong>暂无联动</strong>
               </div>
             </div>
-            <div v-else class="dashboard-session-list dashboard-table-list">
-              <div class="dashboard-table-head dashboard-session-row">
-                <span>会话名称</span>
-                <span>风险级别</span>
-                <span>运行状态</span>
-                <span>会话标识</span>
+            <div v-else class="dashboard-session-summary-card">
+              <div class="dashboard-session-summary-head">
+                <div class="dashboard-session-summary-title">
+                  <span>联动</span>
+                  <strong>最近联动会话</strong>
+                  <StatusPill label="运行态" tone="info" />
+                </div>
+                <button class="ghost-button small" type="button" @click="refresh">刷新</button>
               </div>
-              <article
-                v-for="item in sessionPreview"
-                :key="item.session_id"
-                class="dashboard-session-card dashboard-session-row dashboard-table-row"
-              >
-                <div class="dashboard-table-cell dashboard-session-name">
-                  <strong>{{ item.session_name }}</strong>
-                </div>
-                <div class="dashboard-table-cell dashboard-session-level">
-                  <StatusPill :label="levelLabel(item.risk_level)" :tone="levelTone(item.risk_level)" />
-                </div>
-                <div class="dashboard-table-cell dashboard-session-status">
-                  <StatusPill :label="statusLabel(item.status)" :tone="statusTone(item.status)" />
-                </div>
-                <div class="dashboard-table-cell dashboard-session-id">
-                  <span>{{ item.session_id }}</span>
-                </div>
-              </article>
 
-              <article
-                v-if="sessionOverflowCount"
-                class="dashboard-session-card dashboard-session-row dashboard-table-row muted"
-              >
-                <div class="dashboard-table-cell dashboard-session-name">
-                  <strong>+{{ sessionOverflowCount }}</strong>
+              <div class="dashboard-session-summary-toolbar">
+                <span class="dashboard-session-summary-metric info">{{ sessionCards.length }} 条</span>
+                <span class="dashboard-session-summary-metric danger">高危 {{ highRiskSessionCount }}</span>
+              </div>
+
+              <div class="dashboard-session-summary-body">
+                <div class="dashboard-session-summary-copy">
+                  <span>运行态</span>
+                  <strong>{{ sessionSummaryLead }}</strong>
+                  <p>{{ sessionPreview[0].session_name }} / {{ sessionPreview[0].session_id }}</p>
                 </div>
-                <div class="dashboard-table-cell dashboard-session-level">
-                  <small>未展开</small>
+
+                <div class="dashboard-session-flow">
+                  <article
+                    v-for="item in sessionPreview"
+                    :key="item.session_id"
+                    class="dashboard-session-flow-item"
+                  >
+                    <span :class="['dashboard-session-flow-dot', `tone-${sessionFlowTone(item.status, item.risk_level)}`]"></span>
+                    <div class="dashboard-session-flow-main">
+                      <div class="dashboard-session-flow-line">
+                        <strong>{{ item.session_name }}</strong>
+                        <span>{{ item.session_id }}</span>
+                      </div>
+                      <p>{{ sessionFlowText(item.status, item.risk_level) }}</p>
+                    </div>
+                    <div class="dashboard-session-flow-status">
+                      <StatusPill :label="levelLabel(item.risk_level)" :tone="levelTone(item.risk_level)" />
+                      <StatusPill
+                        v-if="shouldShowSessionStatus(item.status)"
+                        :label="statusLabel(item.status)"
+                        :tone="statusTone(item.status)"
+                      />
+                    </div>
+                  </article>
                 </div>
-                <div class="dashboard-table-cell dashboard-session-status">
-                  <small>历史会话</small>
-                </div>
-                <div class="dashboard-table-cell dashboard-session-id">
-                  <small>查看更多</small>
-                </div>
-              </article>
+              </div>
             </div>
           </PageSection>
         </div>
+
       </section>
     </section>
   </section>

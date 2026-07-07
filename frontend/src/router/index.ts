@@ -23,7 +23,28 @@ const router = createRouter({
       component: LoginPage,
       meta: {
         requiresAuth: false,
+        authPage: true,
         title: '登录'
+      }
+    },
+    {
+      path: '/register',
+      name: 'register',
+      component: LoginPage,
+      meta: {
+        requiresAuth: false,
+        authPage: true,
+        title: '注册'
+      }
+    },
+    {
+      path: '/forgot-password',
+      name: 'forgot-password',
+      component: LoginPage,
+      meta: {
+        requiresAuth: false,
+        authPage: true,
+        title: '忘记密码'
       }
     },
     {
@@ -78,7 +99,7 @@ const router = createRouter({
           name: 'ai-endpoints-mcp-policy',
           component: AiEndpointMcpPolicyPage,
           meta: {
-            title: 'MCP 绛栫暐',
+            title: 'MCP 策略',
             accessPath: '/ai-endpoints'
           }
         },
@@ -140,7 +161,7 @@ router.beforeEach(async (to) => {
   await initializeAuth()
 
   if (to.meta.requiresAuth === false) {
-    if (to.name === 'login' && isAuthenticated()) {
+    if (to.meta.authPage && isAuthenticated()) {
       return authState.user?.pages[0] || '/'
     }
     return true

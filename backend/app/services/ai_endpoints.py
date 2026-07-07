@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from copy import deepcopy
 from datetime import timedelta
@@ -691,31 +692,51 @@ def build_ai_endpoint_usage_summaries(db: Session) -> dict[int, dict[str, Any]]:
             },
         )
 
-    for token in db.query(RuntimeEnrollmentToken).all():
-        if token.ai_endpoint_id is None:
+    token_rows = (
+        db.query(RuntimeEnrollmentToken.ai_endpoint_id)
+        .filter(RuntimeEnrollmentToken.ai_endpoint_id.isnot(None))
+        .all()
+    )
+    for endpoint_id, in token_rows:
+        if endpoint_id is None:
             continue
-        ensure(token.ai_endpoint_id)["token_count"] += 1
+        ensure(endpoint_id)["token_count"] += 1
 
-    for runtime in db.query(ManagedRuntime).all():
-        if runtime.ai_endpoint_id is None:
+    runtime_rows = (
+        db.query(
+            ManagedRuntime.ai_endpoint_id,
+            ManagedRuntime.runtime_type,
+            ManagedRuntime.status,
+            ManagedRuntime.last_seen_at,
+        )
+        .filter(ManagedRuntime.ai_endpoint_id.isnot(None))
+        .all()
+    )
+    for endpoint_id, runtime_type, runtime_status, last_seen_at in runtime_rows:
+        if endpoint_id is None:
             continue
-        bucket = ensure(runtime.ai_endpoint_id)
+        bucket = ensure(endpoint_id)
         bucket["runtime_count"] += 1
-        if str(runtime.runtime_type or "").strip() == OPENCLAW_RUNTIME_TYPE_HINT:
+        if str(runtime_type or "").strip() == OPENCLAW_RUNTIME_TYPE_HINT:
             bucket["openclaw_runtime_count"] += 1
-        if runtime.status in {"pending", "approved"}:
+        if runtime_status in {"pending", "approved"}:
             bucket["runtime_pending_count"] += 1
-        if runtime.status == "active":
+        if runtime_status == "active":
             bucket["runtime_active_count"] += 1
-        if runtime.last_seen_at is not None:
-            rendered = format_beijing(runtime.last_seen_at) or ""
+        if last_seen_at is not None:
+            rendered = format_beijing(last_seen_at) or ""
             if not bucket["last_runtime_seen_at"] or rendered > bucket["last_runtime_seen_at"]:
                 bucket["last_runtime_seen_at"] = rendered
-            if runtime.last_seen_at >= online_threshold:
+            if last_seen_at >= online_threshold:
                 bucket["runtime_online_count"] += 1
 
-    for task in db.query(AttackTask).all():
-        raw_value = task.params.get("ai_endpoint_id")
+    task_rows = db.query(AttackTask.status, AttackTask.params_json).all()
+    for task_status, params_json in task_rows:
+        try:
+            params = json.loads(params_json or "{}")
+        except json.JSONDecodeError:
+            params = {}
+        raw_value = params.get("ai_endpoint_id")
         endpoint_id: int | None = None
         if isinstance(raw_value, int):
             endpoint_id = raw_value
@@ -725,7 +746,7 @@ def build_ai_endpoint_usage_summaries(db: Session) -> dict[int, dict[str, Any]]:
             continue
         bucket = ensure(endpoint_id)
         bucket["task_count"] += 1
-        if task.status in {"ready", "queued", "scheduled", "running"}:
+        if task_status in {"ready", "queued", "scheduled", "running"}:
             bucket["active_task_count"] += 1
 
     return usage
@@ -1004,9 +1025,17 @@ def task_ai_endpoint_snapshot(task: AttackTask) -> dict[str, Any] | None:
 def count_active_tasks_for_endpoint(db: Session, endpoint_id: int) -> int:
     active_statuses = {"ready", "queued", "scheduled", "running"}
     count = 0
-    items = db.query(AttackTask).filter(AttackTask.status.in_(tuple(active_statuses))).all()
-    for item in items:
-        raw_value = item.params.get("ai_endpoint_id")
+    task_rows = (
+        db.query(AttackTask.params_json)
+        .filter(AttackTask.status.in_(tuple(active_statuses)))
+        .all()
+    )
+    for params_json, in task_rows:
+        try:
+            params = json.loads(params_json or "{}")
+        except json.JSONDecodeError:
+            params = {}
+        raw_value = params.get("ai_endpoint_id")
         if raw_value == endpoint_id or str(raw_value) == str(endpoint_id):
             count += 1
     return count

@@ -113,13 +113,13 @@ def _add_cover_page(document: DocumentType, payload: dict[str, Any]) -> None:
 
     kicker = document.add_paragraph()
     kicker.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _add_run(kicker, "蓝队防御平台 / 中文正式报告", size=10.5, bold=True, color="2D5FA8")
+    _add_run(kicker, "GuardianAgent / 中文导出报告", size=10.5, bold=True, color="2D5FA8")
 
     title = document.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.paragraph_format.space_before = Pt(8)
     title.paragraph_format.space_after = Pt(6)
-    _add_run(title, "AI 安全防护分析报告", size=24, bold=True, color="12263F")
+    _add_run(title, "安全事件分析报告", size=24, bold=True, color="12263F")
 
     subtitle = document.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -146,7 +146,7 @@ def _add_cover_page(document: DocumentType, payload: dict[str, Any]) -> None:
     _append_cell_paragraph(summary_cell, str(presentation.get("summary_text") or "-"), size=10.5, color="12263F")
     _append_cell_paragraph(
         summary_cell,
-        "详细原始返回、命中证据和敏感数据痕迹见正文与附录。",
+        "详细执行链、AI 研判、命中证据与敏感数据痕迹见正文与附录。",
         size=9.5,
         color="5D718A",
     )
@@ -209,6 +209,7 @@ def _add_object_section(document: DocumentType, payload: dict[str, Any]) -> None
 
 def _add_trace_section(document: DocumentType, payload: dict[str, Any]) -> None:
     presentation = payload.get("presentation") or {}
+    ai_review_summary = presentation.get("ai_review_summary") or {}
     _section_heading(document, "三、执行链判断")
 
     _sub_heading(document, "3.1 授权与规则链路")
@@ -226,7 +227,10 @@ def _add_trace_section(document: DocumentType, payload: dict[str, Any]) -> None:
     else:
         _add_body_paragraph(document, "当前没有记录到执行链判断信息。", color="5D718A")
 
-    _sub_heading(document, "3.2 命中概览")
+    _sub_heading(document, "3.2 AI 研判结论")
+    _add_ai_review_summary_section(document, ai_review_summary)
+
+    _sub_heading(document, "3.3 命中概览")
     _add_bullet_group(document, "命中控制面", presentation.get("matched_controls") or [])
     _add_bullet_group(document, "命中规则", presentation.get("matched_rules") or [])
     _add_bullet_group(document, "攻击信号", presentation.get("matched_signals") or [])
@@ -374,6 +378,50 @@ def _add_bullet_group(document: DocumentType, title: str, items: list[str]) -> N
         paragraph = document.add_paragraph(style="List Bullet")
         paragraph.paragraph_format.space_after = Pt(0.5)
         _add_run(paragraph, str(item), size=10.2, color="12263F")
+
+
+def _add_ai_review_summary_section(document: DocumentType, item: dict[str, Any]) -> None:
+    if not item:
+        _add_body_paragraph(document, "当前没有可展示的 AI 研判信息。", color="5D718A")
+        return
+
+    tone = str(item.get("status_tone") or "info")
+    _callout_block(
+        document,
+        str(item.get("status_label") or "AI 研判结论"),
+        str(item.get("summary") or "-"),
+        str(item.get("detail") or ""),
+        tone,
+    )
+
+    _add_metadata_table(
+        document,
+        [
+            ("AI 复核状态", str(item.get("status_label") or "-")),
+            ("AI 研判意见", str(item.get("opinion_label") or "-")),
+            ("AI 风险等级", str(item.get("result_level_label") or "-")),
+            ("复核策略", str(item.get("mode_label") or "-")),
+        ],
+    )
+
+    result_rules = list(item.get("result_rules") or [])
+    if result_rules:
+        _add_bullet_group(document, "AI 侧命中规则", result_rules)
+
+    adjustments = list(item.get("adjustments") or [])
+    if adjustments:
+        _add_bullet_group(document, "规则修正", adjustments)
+
+    error = str(item.get("error") or "").strip()
+    if error:
+        _callout_block(
+            document,
+            "失败原因",
+            error,
+            "本次 AI 复核未生成可直接采纳的稳定结论，平台已按规则链回退处理。",
+            "warn",
+            compact=True,
+        )
 
 
 def _callout_block(

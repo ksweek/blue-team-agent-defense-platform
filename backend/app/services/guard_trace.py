@@ -23,13 +23,16 @@ def build_task_guard_trace(task: AttackTask | None) -> dict[str, Any] | None:
     if not authorization:
         authorization = snapshot_result
 
+    ai_review = _first_dict(payload.get("ai_review"))
+    ai_review_result = _first_dict(ai_review.get("result") if ai_review else None)
+
     rule_assessment = _first_dict(
         payload.get("rule_assessment"),
         authorization.get("task_rule_assessment") if authorization else None,
         snapshot_result.get("task_rule_assessment") if snapshot_result else None,
     )
 
-    if not authorization and not rule_assessment:
+    if not authorization and not rule_assessment and not ai_review:
         return None
 
     matched_controls = _normalize_string_list(authorization.get("matched_controls") if authorization else [])
@@ -70,6 +73,12 @@ def build_task_guard_trace(task: AttackTask | None) -> dict[str, Any] | None:
         "ai_review_mode": str(payload.get("ai_review_mode") or "").strip(),
         "ai_review_invoked": bool(payload.get("ai_review_invoked", False)),
         "review_decision": str(payload.get("review_decision") or "").strip(),
+        "ai_review_status": str(ai_review.get("status") or "").strip(),
+        "ai_review_adjustments": _normalize_string_list(ai_review.get("adjustments") if ai_review else []),
+        "ai_review_error": str(ai_review.get("error") or "").strip(),
+        "ai_review_result_status": str(ai_review_result.get("event_status") or "").strip().lower(),
+        "ai_review_result_level": str(ai_review_result.get("event_level") or "").strip().lower(),
+        "ai_review_result_rules": _normalize_string_list(ai_review_result.get("hit_rules") if ai_review_result else []),
         "rule_verdict": rule_verdict,
         "rule_assessment": {
             "verdict": rule_verdict,

@@ -56,6 +56,12 @@ const REVIEW_AI_SETTING_KEYS = [
   'review_ai_api_key',
   'review_ai_model',
 ] as const
+const MASKED_DISPLAY_SETTING_KEYS = new Set([
+  'qq_email_account',
+  'notify_email_sender',
+  'smtp_username',
+  'review_ai_api_url',
+])
 
 const { data, loading, error, refresh } = useAsyncData(async () => {
   const [settings, auditLogs, systemActions] = await Promise.all([
@@ -295,6 +301,10 @@ function isTokenInput(item: SystemSettingItem) {
 
 function isPasswordInput(item: SystemSettingItem) {
   return fieldMeta(item).control === 'password'
+}
+
+function isMaskedInput(item: SystemSettingItem) {
+  return isPasswordInput(item) || MASKED_DISPLAY_SETTING_KEYS.has(item.setting_key)
 }
 
 function normalizeTokens(value: string) {
@@ -737,7 +747,7 @@ async function runAction(actionKey: SystemActionKey) {
                   class="text-input settings-form-input"
                   :disabled="!canEdit(item.setting_key)"
                   :placeholder="fieldMeta(item).placeholder"
-                  :type="isPasswordInput(item) ? 'password' : 'text'"
+                  :type="isMaskedInput(item) ? 'password' : 'text'"
                   @blur="saveSetting(item.setting_key)"
                   @keydown.enter.prevent="saveSetting(item.setting_key)"
                 />
@@ -810,7 +820,7 @@ async function runAction(actionKey: SystemActionKey) {
                       class="text-input settings-form-input"
                       :disabled="!canEdit(item.setting_key)"
                       :placeholder="fieldMeta(item).placeholder"
-                      :type="isPasswordInput(item) ? 'password' : 'text'"
+                      :type="isMaskedInput(item) ? 'password' : 'text'"
                       @blur="saveSetting(item.setting_key)"
                       @keydown.enter.prevent="saveSetting(item.setting_key)"
                     />
@@ -932,7 +942,7 @@ async function runAction(actionKey: SystemActionKey) {
                       class="text-input settings-form-input"
                       :disabled="!canEdit(item.setting_key)"
                       :placeholder="fieldMeta(item).placeholder"
-                      :type="isPasswordInput(item) ? 'password' : 'text'"
+                      :type="isMaskedInput(item) ? 'password' : 'text'"
                       @blur="saveSetting(item.setting_key)"
                       @keydown.enter.prevent="saveSetting(item.setting_key)"
                     />

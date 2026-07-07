@@ -5,6 +5,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from ...core.config import settings
 from ...core.response import success
 from ...db.session import get_db
 from ...models import AiEndpoint, ManagedRuntime, RuntimeEnrollmentToken, User
@@ -37,6 +38,7 @@ from ...services.runtime_registry import (
     serialize_runtime_enrollment_token,
     verify_runtime_activation_code,
 )
+from ...services.request_security import enforce_rate_limit
 from ...services.security import hash_password
 from ...services.time_utils import utc_now
 
@@ -298,8 +300,16 @@ def issue_runtime_activation_code(
 @public_router.post("/activate")
 def activate_runtime(
     payload: RuntimeActivationCodeExchangeRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    enforce_rate_limit(
+        request,
+        bucket="runtime-activate",
+        limit=settings.public_activation_rate_limit_attempts,
+        window_seconds=settings.public_activation_rate_limit_window_seconds,
+        label=payload.registration_id,
+    )
     registration_id = payload.registration_id.strip()
     item = db.query(ManagedRuntime).filter(ManagedRuntime.registration_id == registration_id).first()
     if item is None:
@@ -335,8 +345,16 @@ def activate_runtime(
 @public_router.post("/client-activate")
 def activate_runtime_with_bootstrap_code(
     payload: RuntimeBootstrapActivationRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    enforce_rate_limit(
+        request,
+        bucket="runtime-client-activate",
+        limit=settings.public_activation_rate_limit_attempts,
+        window_seconds=settings.public_activation_rate_limit_window_seconds,
+        secret_value=payload.activation_code,
+    )
     try:
         token = resolve_bootstrap_activation_token(db, payload.activation_code)
     except ValueError as exc:

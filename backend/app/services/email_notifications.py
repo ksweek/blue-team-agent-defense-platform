@@ -118,16 +118,15 @@ def send_test_email(db: Session) -> dict[str, str]:
     _ensure_sendable(config, require_enabled=False)
 
     template = EMAIL_TEMPLATE_DEFINITIONS[config.template_key]
-    sent_at = beijing_now()
+    sent_at = beijing_now().replace(microsecond=0)
     subject = f"{config.subject_prefix} {template['subject']}（测试）".strip()
-    body = (
-        f"{template['intro']}\n\n"
-        "这是一封测试邮件，用于验证平台 QQ 邮箱告警链路。\n"
-        f"时间：{sent_at.strftime('%Y-%m-%d %H:%M:%S')} 北京时间\n"
-        f"发件账号：{config.qq_email_account}\n"
-        f"收件人：{', '.join(config.recipients)}\n"
-        f"发送阈值：{config.min_level}\n"
-        f"汇总周期：{config.digest_minutes} 分钟\n"
+    body = _render_email_summary(
+        time_range=_format_time_range(sent_at - timedelta(minutes=config.digest_minutes), sent_at),
+        total_events=0,
+        high_events=0,
+        medium_events=0,
+        low_events=0,
+        urgent_label="否（测试邮件）",
     )
     _dispatch_email(config, subject, body)
     return {
@@ -135,6 +134,41 @@ def send_test_email(db: Session) -> dict[str, str]:
         "sender": config.qq_email_account,
         "recipients": ", ".join(config.recipients),
         "sent_at": sent_at.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def send_auth_verification_email(db: Session, *, recipient: str, code: str, purpose: str) -> dict[str, str]:
+    config = load_email_notification_config(db)
+
+    purpose_label = "注册账号" if purpose == "register" else "重置密码"
+    subject = f"{config.subject_prefix} {purpose_label}验证码".strip()
+    body = "\n".join(
+        [
+            f"验证码：{code}",
+            "",
+            f"用途：{purpose_label}",
+            "有效期：10 分钟",
+            "",
+            "如果不是你本人操作，请忽略此邮件。",
+        ]
+    )
+    target_config = EmailNotificationConfig(
+        enabled=True,
+        recipients=[recipient],
+        template_key=config.template_key,
+        min_level=config.min_level,
+        digest_minutes=config.digest_minutes,
+        subject_prefix=config.subject_prefix,
+        sender=config.sender,
+        qq_email_account=config.qq_email_account,
+        qq_email_auth_code=config.qq_email_auth_code,
+    )
+    _ensure_sendable(target_config, require_enabled=False)
+    _dispatch_email(target_config, subject, body)
+    return {
+        "subject": subject,
+        "sender": config.qq_email_account,
+        "recipient": recipient,
     }
 
 
@@ -167,7 +201,7 @@ def apply_email_digest_cycle() -> dict[str, str]:
             .all()
         )
         if not new_events:
-            return {"status": "idle", "detail": "没有新告警"}
+            return {"status": "idle", "detail": "没有新的告警"}
 
         max_seen_event_id = new_events[-1].id
         qualifying_events = [item for item in new_events if _event_matches_level(item.event_level, config.min_level)]
@@ -181,7 +215,7 @@ def apply_email_digest_cycle() -> dict[str, str]:
         if last_digest_at is not None and now_utc < (last_digest_at + timedelta(minutes=config.digest_minutes)).replace(
             tzinfo=None
         ):
-            return {"status": "waiting", "detail": "尚未到达汇总发送周期"}
+            return {"status": "waiting", "detail": "尚未到达邮件汇总发送周期"}
 
         subject, body = _build_digest_email(config, qualifying_events)
         _dispatch_email(config, subject, body)
@@ -251,24 +285,85 @@ def _dispatch_email(config: EmailNotificationConfig, subject: str, body: str) ->
 def _build_digest_email(config: EmailNotificationConfig, events: list[SecurityEvent]) -> tuple[str, str]:
     template = EMAIL_TEMPLATE_DEFINITIONS[config.template_key]
     subject = f"{config.subject_prefix} {template['subject']}".strip()
-    lines = []
-    for item in events:
-        created_at = format_beijing(item.created_at) or "-"
-        lines.append(
-            f"- [{item.event_level.upper()}] {item.event_type} | {item.source} -> {item.target} | {created_at} | {item.detail}"
-        )
-
-    body = (
-        f"{template['intro']}\n\n"
-        f"生成时间：{beijing_now().strftime('%Y-%m-%d %H:%M:%S')} 北京时间\n"
-        f"发件账号：{config.qq_email_account}\n"
-        f"汇总条数：{len(events)}\n"
-        f"发送阈值：{config.min_level}\n"
-        f"汇总周期：{config.digest_minutes} 分钟\n\n"
-        "告警明细：\n"
-        f"{chr(10).join(lines)}\n"
+    summary = _summarize_events(events)
+    body = _render_email_summary(
+        time_range=summary["time_range"],
+        total_events=len(events),
+        high_events=summary["high_events"],
+        medium_events=summary["medium_events"],
+        low_events=summary["low_events"],
+        urgent_label=_urgent_review_label(
+            high_events=summary["high_events"],
+            medium_events=summary["medium_events"],
+            total_events=len(events),
+        ),
     )
     return subject, body
+
+
+def _summarize_events(events: list[SecurityEvent]) -> dict[str, str | int]:
+    summary = {
+        "high_events": 0,
+        "medium_events": 0,
+        "low_events": 0,
+    }
+    timestamps = []
+
+    for item in events:
+        level = str(item.event_level or "medium").strip().lower()
+        if level == "high":
+            summary["high_events"] += 1
+        elif level == "low":
+            summary["low_events"] += 1
+        else:
+            summary["medium_events"] += 1
+
+        if item.created_at is not None:
+            timestamps.append(item.created_at)
+
+    if timestamps:
+        time_range = _format_time_range(min(timestamps), max(timestamps))
+    else:
+        current = beijing_now().replace(microsecond=0)
+        time_range = _format_time_range(current - timedelta(minutes=1), current)
+
+    return {
+        "time_range": time_range,
+        **summary,
+    }
+
+
+def _format_time_range(start_at, end_at) -> str:
+    start_label = format_beijing(start_at) or "-"
+    end_label = format_beijing(end_at) or "-"
+    return f"{start_label} - {end_label}"
+
+
+def _urgent_review_label(*, high_events: int, medium_events: int, total_events: int) -> str:
+    if high_events > 0:
+        return "是"
+    if medium_events >= 3 or total_events >= 10:
+        return "是"
+    return "否"
+
+
+def _render_email_summary(
+    *,
+    time_range: str,
+    total_events: int,
+    high_events: int,
+    medium_events: int,
+    low_events: int,
+    urgent_label: str,
+) -> str:
+    return (
+        f"时间范围：{time_range}\n"
+        f"告警总数：{total_events}\n"
+        f"高危：{high_events}\n"
+        f"中危：{medium_events}\n"
+        f"低危：{low_events}\n"
+        f"是否需要紧急查看：{urgent_label}\n"
+    )
 
 
 def _upsert_setting(db: Session, key: str, value: str, description: str) -> None:

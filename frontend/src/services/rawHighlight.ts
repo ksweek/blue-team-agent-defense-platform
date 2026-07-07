@@ -2,6 +2,7 @@ import type { SecurityReportPayloadItem, SecurityReportRawSection, SensitiveFind
 import {
   maskEmail,
   maskMiddle,
+  maskUrlLike,
   maskUnixPath,
   maskWindowsPath,
   redactSensitiveValue,
@@ -70,6 +71,7 @@ const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g
 const OPENAI_KEY_RE = /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g
 const ANTHROPIC_KEY_RE = /\bsk-ant-[A-Za-z0-9_-]{12,}\b/g
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g
+const URL_RE = /\b(?:https?|wss?|runtime):\/\/[^\s"'<>)}\],;]+/gi
 const WINDOWS_PATH_RE = /\b(?:[A-Za-z]:\\|\\\\)[^\s"'<>|]+/g
 const UNIX_PATH_RE = /(^|[^A-Za-z0-9:])((?:\/[^/\s"'`]+){2,})/g
 
@@ -315,6 +317,7 @@ function collectSensitiveMatches(value: string, sensitiveCategories: string[]) {
   matches.push(...collectSimpleMatches(value, OPENAI_KEY_RE, 'OpenAI Key', (token) => maskMiddle(token, 8, 4)))
   matches.push(...collectSimpleMatches(value, ANTHROPIC_KEY_RE, 'Anthropic Key', (token) => maskMiddle(token, 8, 4)))
   matches.push(...collectSimpleMatches(value, EMAIL_RE, '邮箱', (token) => maskEmail(token)))
+  matches.push(...collectSimpleMatches(value, URL_RE, 'API 接口', (token) => maskUrlLike(token)))
   matches.push(...collectSimpleMatches(value, WINDOWS_PATH_RE, '路径', (token) => maskWindowsPath(token)))
   matches.push(
     ...collectUnixPathMatches(value).map((item) => ({

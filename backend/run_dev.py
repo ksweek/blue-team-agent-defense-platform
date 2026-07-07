@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
+import traceback
 
 import uvicorn
 
@@ -18,6 +21,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     configure_logging()
+    logger = logging.getLogger("app.run_dev")
+    logger.info("starting backend server | host=%s port=%s reload=%s", args.host, args.port, not args.no_reload)
     uvicorn.run(
         "app.main:app",
         host=args.host,
@@ -29,4 +34,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        try:
+            configure_logging()
+            logging.getLogger("app.run_dev").critical("backend process exited unexpectedly", exc_info=exc)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+        raise

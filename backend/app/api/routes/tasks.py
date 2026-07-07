@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.response import success
@@ -21,6 +22,7 @@ from ...schemas.task import (
 from ...services.ai_endpoints import attach_ai_endpoint_selection, task_ai_endpoint_snapshot
 from ...services.audit import append_audit_log
 from ...services.authorization import require_roles
+from ...services.cache import cached_payload, invalidate_cache_namespaces
 from ...services.event_status import EVENT_STATUS_SUSPICIOUS, normalize_event_status
 from ...services.guard_trace import build_task_guard_trace
 from ...services.report_export import resolve_report_path
@@ -128,6 +130,10 @@ def _get_task_or_404(db: Session, task_id: int) -> AttackTask:
     return item
 
 
+def _invalidate_task_route_cache() -> None:
+    invalidate_cache_namespaces("attack_tasks", "dashboard", "ai_endpoints", "security_events", "reports")
+
+
 def _task_schedule_mode(schedule_at: datetime | None, auto_run: bool) -> tuple[str, datetime | None]:
     if not auto_run:
         return "ready", None
@@ -210,7 +216,7 @@ def _delete_report_artifact(report: Report) -> bool:
         if artifact_path.exists():
             artifact_path.unlink()
             return True
-    except OSError:
+    except (OSError, ValueError):
         logger.warning("report artifact delete failed | report_id=%s file_path=%s", report.id, report.file_path)
 
     return False
@@ -253,7 +259,14 @@ def _create_sample_task(
 def get_attack_worker_status(
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    return success(task_worker_snapshot())
+    return success(
+        cached_payload(
+            "attack_tasks",
+            key_parts={"route": "worker_status"},
+            loader=task_worker_snapshot,
+            ttl_seconds=2,
+        )
+    )
 
 
 @router.post("")
@@ -282,6 +295,7 @@ def create_attack_task(
     append_audit_log(db, current_user, "attack-tasks", "create", f"created task {payload.task_name}")
     db.commit()
     db.refresh(item)
+    _invalidate_task_route_cache()
     logger.info(
         "task created | task_id=%s task_name=%s attack_type=%s user=%s",
         item.id,
@@ -339,6 +353,7 @@ def create_attack_task_from_sample(
         enqueued,
         current_user.username,
     )
+    _invalidate_task_route_cache()
     return success(
         {
             "task": _serialize_task(item),
@@ -402,6 +417,7 @@ def create_attack_tasks_from_samples(
                 enqueued_task_ids.append(item.id)
         for item in items:
             db.refresh(item)
+    _invalidate_task_route_cache()
 
     return success(
         {
@@ -452,6 +468,7 @@ def dispatch_attack_tasks(
                 enqueued_task_ids.append(item.id)
         for item in items:
             db.refresh(item)
+    _invalidate_task_route_cache()
 
     return success(
         {
@@ -476,30 +493,74 @@ def list_attack_tasks(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin", "analyst")),
 ):
-    items = [_serialize_task(item) for item in db.query(AttackTask).order_by(AttackTask.created_at.desc(), AttackTask.id.desc()).all()]
-
-    if attack_type:
-        items = [item for item in items if item["attack_type"] == attack_type]
-    if status:
-        items = [item for item in items if item["status"] == status]
-    if source_type:
-        items = [item for item in items if item["source_type"] == source_type]
-    if execution_mode:
-        items = [item for item in items if item["execution_mode"] == execution_mode]
-    if ai_endpoint_id is not None:
-        items = [item for item in items if (item.get("ai_endpoint") or {}).get("id") == ai_endpoint_id]
-    if keyword:
-        items = [
-            item
-            for item in items
-            if contains_keyword(
-                item,
-                keyword,
-                ["task_name", "attack_type", "target_agent", "status", "source_type", "source_ref", "runtime_name"],
+    def load_payload() -> dict:
+        query = db.query(AttackTask)
+        if attack_type:
+            query = query.filter(AttackTask.attack_type == attack_type)
+        if status:
+            query = query.filter(AttackTask.status == status)
+        if source_type:
+            query = query.filter(AttackTask.source_type == source_type)
+        if execution_mode:
+            query = query.filter(AttackTask.execution_mode == execution_mode)
+        if keyword and ai_endpoint_id is None:
+            search = f"%{keyword.strip()}%"
+            query = query.filter(
+                or_(
+                    AttackTask.task_name.ilike(search),
+                    AttackTask.attack_type.ilike(search),
+                    AttackTask.target_agent.ilike(search),
+                    AttackTask.status.ilike(search),
+                    AttackTask.source_type.ilike(search),
+                    AttackTask.source_ref.ilike(search),
+                    AttackTask.runtime_name.ilike(search),
+                )
             )
-        ]
 
-    return success(paginate(items, page=page, page_size=page_size))
+        ordered_query = query.order_by(AttackTask.created_at.desc(), AttackTask.id.desc())
+        if ai_endpoint_id is None:
+            total = ordered_query.count()
+            page_items = ordered_query.offset((page - 1) * page_size).limit(page_size).all()
+            return {
+                "items": [_serialize_task(item) for item in page_items],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            }
+
+        serialized = [_serialize_task(item) for item in ordered_query.all()]
+        if ai_endpoint_id is not None:
+            serialized = [item for item in serialized if (item.get("ai_endpoint") or {}).get("id") == ai_endpoint_id]
+        if keyword:
+            serialized = [
+                item
+                for item in serialized
+                if contains_keyword(
+                    item,
+                    keyword,
+                    ["task_name", "attack_type", "target_agent", "status", "source_type", "source_ref", "runtime_name"],
+                )
+            ]
+        return paginate(serialized, page=page, page_size=page_size)
+
+    return success(
+        cached_payload(
+            "attack_tasks",
+            key_parts={
+                "route": "list",
+                "page": page,
+                "page_size": page_size,
+                "attack_type": attack_type,
+                "status": status,
+                "source_type": source_type,
+                "execution_mode": execution_mode,
+                "ai_endpoint_id": ai_endpoint_id,
+                "keyword": keyword,
+            },
+            loader=load_payload,
+            ttl_seconds=2,
+        )
+    )
 
 
 @router.get("/{task_id}")
@@ -552,6 +613,7 @@ def pause_attack_task(
         append_audit_log(db, current_user, "attack-tasks", "pause-request", f"pause requested for task {item.task_name}")
         db.commit()
         db.refresh(item)
+        _invalidate_task_route_cache()
         logger.info("task pause requested | task_id=%s user=%s", item.id, current_user.username)
         return success({"task": _serialize_task(item)}, message="task pause requested")
     if item.status in RESUMABLE_TASK_STATUS_MAP:
@@ -571,6 +633,7 @@ def pause_attack_task(
     append_audit_log(db, current_user, "attack-tasks", "pause", f"paused task {item.task_name}")
     db.commit()
     db.refresh(item)
+    _invalidate_task_route_cache()
     logger.info("task paused | task_id=%s user=%s", item.id, current_user.username)
     return success({"task": _serialize_task(item)}, message="task paused")
 
@@ -602,6 +665,7 @@ def resume_attack_task(
     if item.status == "queued":
         enqueued = enqueue_attack_task(item.id)
         db.refresh(item)
+    _invalidate_task_route_cache()
 
     logger.info(
         "task resumed | task_id=%s status=%s enqueued=%s user=%s",
@@ -641,6 +705,7 @@ def cancel_attack_task(
         append_audit_log(db, current_user, "attack-tasks", "cancel-request", f"cancel requested for task {item.task_name}")
         db.commit()
         db.refresh(item)
+        _invalidate_task_route_cache()
         logger.info("task cancel requested | task_id=%s user=%s", item.id, current_user.username)
         return success({"task": _serialize_task(item)}, message="task cancel requested")
     if item.status == "cancelled":
@@ -660,6 +725,7 @@ def cancel_attack_task(
     append_audit_log(db, current_user, "attack-tasks", "cancel", f"cancelled task {item.task_name}")
     db.commit()
     db.refresh(item)
+    _invalidate_task_route_cache()
     logger.info("task cancelled | task_id=%s user=%s", item.id, current_user.username)
     return success({"task": _serialize_task(item)}, message="task cancelled")
 
@@ -694,6 +760,7 @@ def retry_attack_task(
     if item.status == "queued":
         enqueued = enqueue_attack_task(item.id)
         db.refresh(item)
+    _invalidate_task_route_cache()
 
     logger.info(
         "task retried | task_id=%s status=%s enqueued=%s user=%s",
@@ -751,6 +818,7 @@ def run_attack_task(
 
     enqueued = enqueue_attack_task(item.id)
     db.refresh(item)
+    _invalidate_task_route_cache()
     logger.info(
         "task run requested | task_id=%s enqueued=%s status=%s user=%s",
         item.id,
@@ -801,6 +869,7 @@ def delete_attack_task(
     db.delete(item)
     append_audit_log(db, current_user, "attack-tasks", "delete", f"deleted task {task_name}")
     db.commit()
+    _invalidate_task_route_cache()
 
     logger.info(
         "task deleted | task_id=%s reports=%s events=%s report_files=%s user=%s",

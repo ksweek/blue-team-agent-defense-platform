@@ -38,8 +38,18 @@ REPORT_FILE_EXTENSIONS = {
 REPORT_TEMPLATE_META = {
     "template_key": "cn_full_security_report_v2",
     "template_name": "中文完整安全报告",
-    "template_version": "2.0",
+    "template_version": "2.1",
 }
+
+
+def _ensure_within_report_export_dir(path: Path) -> Path:
+    report_root = REPORT_EXPORT_DIR.resolve()
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(report_root)
+    except ValueError as exc:
+        raise ValueError("report artifact path is outside the managed export directory") from exc
+    return resolved
 
 CONTROL_LABELS = {
     "prompt_injection_firewall": "提示注入防火墙",
@@ -154,7 +164,7 @@ def export_report_artifact(
 
     REPORT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     relative_path = build_report_relative_path(report, task, artifact_format)
-    output_path = (BACKEND_DIR / relative_path).resolve()
+    output_path = _ensure_within_report_export_dir((BACKEND_DIR / relative_path).resolve())
 
     payload = build_report_artifact_payload(report=report, task=task, event=event)
     if artifact_format == "json":
@@ -180,9 +190,8 @@ def export_report_artifact(
 
 def resolve_report_path(file_path: str) -> Path:
     path = Path(file_path)
-    if path.is_absolute():
-        return path
-    return (BACKEND_DIR / path).resolve()
+    candidate = path if path.is_absolute() else (BACKEND_DIR / path)
+    return _ensure_within_report_export_dir(candidate)
 
 
 def derive_report_variant_path(file_path: str, artifact_format: str) -> Path:
@@ -190,8 +199,8 @@ def derive_report_variant_path(file_path: str, artifact_format: str) -> Path:
     base_path = resolve_report_path(file_path)
     target_suffix = REPORT_FILE_EXTENSIONS[normalized_format]
     if base_path.suffix:
-        return base_path.with_suffix(target_suffix)
-    return base_path.with_name(f"{base_path.name}{target_suffix}")
+        return _ensure_within_report_export_dir(base_path.with_suffix(target_suffix))
+    return _ensure_within_report_export_dir(base_path.with_name(f"{base_path.name}{target_suffix}"))
 
 
 def build_report_relative_path(report: Report, task: AttackTask, artifact_format: str) -> Path:
@@ -255,9 +264,10 @@ def build_report_presentation(
     exported_at: str,
 ) -> dict[str, Any]:
     guard_trace = build_task_guard_trace(task) or {}
+    ai_review_summary = _build_ai_review_summary(guard_trace=guard_trace, event=event)
     status_badge = _event_status_badge(event.status if event else "")
     risk_badge = _risk_badge(event.event_level if event else "")
-    review_badge = _review_badge(guard_trace)
+    review_badge = _review_badge(guard_trace, event)
     raw_sections = _build_raw_sections(event=event, task=task)
     payload_hits = _build_payload_hits(event=event, guard_trace=guard_trace, raw_sections=raw_sections)
     sensitive_hits = _build_sensitive_hits(raw_sections)
@@ -267,7 +277,7 @@ def build_report_presentation(
         event=event,
         status_badge=status_badge,
         risk_badge=risk_badge,
-        review_badge=review_badge,
+        ai_review_summary=ai_review_summary,
         payload_hits=payload_hits,
         sensitive_hits=sensitive_hits,
     )
@@ -275,6 +285,7 @@ def build_report_presentation(
     recommendations = _build_recommendations(
         event=event,
         guard_trace=guard_trace,
+        ai_review_summary=ai_review_summary,
         payload_hits=payload_hits,
         sensitive_hits=sensitive_hits,
     )
@@ -297,19 +308,19 @@ def build_report_presentation(
                 "label": "风险等级",
                 "value": risk_badge["label"],
                 "tone": risk_badge["tone"],
-                "detail": "根据任务命中规则、攻击信号和事件等级综合生成。",
+                "detail": "结合授权决策、规则命中、攻击信号与事件等级综合生成。",
             },
             {
                 "label": "AI 复核",
                 "value": review_badge["label"],
                 "tone": review_badge["tone"],
-                "detail": review_badge["detail"],
+                "detail": _best_text(str(ai_review_summary.get("summary") or ""), review_badge["detail"], "未记录。"),
             },
             {
                 "label": "关键命中",
                 "value": f"{len(payload_hits)} 项",
                 "tone": "warn" if payload_hits else "info",
-                "detail": f"其中敏感数据痕迹 {len(sensitive_hits)} 项。",
+                "detail": f"关键命中 {len(payload_hits)} 项，敏感痕迹 {len(sensitive_hits)} 项。",
             },
         ],
         "object_summary": [
@@ -328,6 +339,7 @@ def build_report_presentation(
             "title": "关键结论",
             "summary": summary_text,
             "detail": _best_text(
+                str(ai_review_summary.get("detail") or ""),
                 str(guard_trace.get("detail") or ""),
                 event.detail if event else "",
                 task.result_summary,
@@ -344,7 +356,7 @@ def build_report_presentation(
             {
                 "label": "授权来源",
                 "value": _guard_source_label(guard_trace.get("source")),
-                "detail": "用于区分是执行前预检复用、运行态快照，还是本次执行阶段重新评估。",
+                "detail": "用于区分预检复用、运行态快照或本次执行阶段重新评估。",
                 "tone": "info",
             },
             {
@@ -358,12 +370,25 @@ def build_report_presentation(
                 "tone": _rule_verdict_tone(str(guard_trace.get("rule_verdict") or "")),
             },
             {
+                "label": "AI 复核状态",
+                "value": str(ai_review_summary.get("status_label") or "未记录"),
+                "detail": _best_text(str(ai_review_summary.get("summary") or ""), str(ai_review_summary.get("detail") or ""), "未记录。"),
+                "tone": str(ai_review_summary.get("status_tone") or "info"),
+            },
+            {
+                "label": "AI 研判意见",
+                "value": str(ai_review_summary.get("opinion_label") or "未记录"),
+                "detail": _best_text(str(ai_review_summary.get("detail") or ""), "未记录。"),
+                "tone": str(ai_review_summary.get("opinion_tone") or "info"),
+            },
+            {
                 "label": "复核策略",
                 "value": _ai_review_mode_label(guard_trace.get("ai_review_mode")),
-                "detail": review_badge["detail"],
-                "tone": review_badge["tone"],
+                "detail": "用于定义 AI 复核的触发范围与执行时机。",
+                "tone": "info",
             },
         ],
+        "ai_review_summary": ai_review_summary,
         "matched_controls": [_policy_label(item) for item in _string_list(guard_trace.get("matched_controls"))],
         "matched_rules": [_policy_label(item) for item in _collect_rules(event=event, guard_trace=guard_trace)],
         "matched_signals": [_signal_label(item) for item in _guard_signals(guard_trace)],
@@ -382,6 +407,7 @@ def build_report_html_artifact(payload: dict[str, Any]) -> str:
     event_status = presentation.get("event_status") or {"label": "-", "tone": "info"}
     risk_level = presentation.get("risk_level") or {"label": "-", "tone": "info"}
     review_status = presentation.get("review_status") or {"label": "-", "tone": "info"}
+    ai_review_summary = presentation.get("ai_review_summary") or {}
     highlights = presentation.get("highlights") or []
     object_summary = presentation.get("object_summary") or []
     decision_summary = presentation.get("decision_summary") or {}
@@ -763,31 +789,35 @@ def build_report_html_artifact(payload: dict[str, Any]) -> str:
         "</section>",
         '<section class="grid">',
         '<article class="card span-7">',
-        '<div class="card-head"><div><h2>关键结论</h2><p>面向人工研判的中文摘要</p></div></div>',
+        '<div class="card-head"><div><h2>关键结论</h2><p>面向处置、复盘与汇报的摘要</p></div></div>',
         '<div class="card-body">',
         f"<div class=\"summary-block\"><strong>{escape(str(decision_summary.get('title') or '关键结论'))}</strong><p>{escape(str(decision_summary.get('summary') or '-'))}</p><p style=\"margin-top:10px;color:var(--muted);\">{escape(str(decision_summary.get('detail') or '-'))}</p></div>",
         "</div>",
         "</article>",
         '<article class="card span-5">',
-        '<div class="card-head"><div><h2>摘要指标</h2><p>重点信息已直接标出</p></div></div>',
+        '<div class="card-head"><div><h2>核心结论</h2><p>重点信息已直接提炼</p></div></div>',
         '<div class="card-body stack">',
         _render_highlights(highlights),
         "</div>",
         "</article>",
         '<article class="card span-6">',
-        '<div class="card-head"><div><h2>对象信息</h2><p>报告、任务与目标对象概览</p></div></div>',
+        '<div class="card-head"><div><h2>任务与目标概况</h2><p>报告、任务与目标对象概览</p></div></div>',
         f"<div class=\"card-body\">{_render_kv_grid(object_summary)}</div>",
         "</article>",
         '<article class="card span-6">',
-        '<div class="card-head"><div><h2>执行链判断</h2><p>授权、规则与复核状态</p></div></div>',
+        '<div class="card-head"><div><h2>执行链判断</h2><p>授权、规则与 AI 复核状态</p></div></div>',
         f"<div class=\"card-body stack\">{_render_trace_rows(trace_summary)}</div>",
         "</article>",
+        '<article class="card span-6">',
+        '<div class="card-head"><div><h2>AI 研判结论</h2><p>展示 AI 认为是什么、规则如何修正以及失败原因</p></div></div>',
+        f"<div class=\"card-body stack\">{_render_ai_review_summary(ai_review_summary)}</div>",
+        "</article>",
         '<article class="card span-4">',
-        '<div class="card-head"><div><h2>命中控制面</h2><p>前置授权或执行守卫</p></div></div>',
+        '<div class="card-head"><div><h2>命中控制面</h2><p>前置授权、执行守卫与控制链</p></div></div>',
         f"<div class=\"card-body\">{_render_chip_list(matched_controls, '当前没有记录到命中控制面。')}</div>",
         "</article>",
         '<article class="card span-4">',
-        '<div class="card-head"><div><h2>命中规则</h2><p>规则引擎与事件规则</p></div></div>',
+        '<div class="card-head"><div><h2>命中规则</h2><p>规则引擎与事件规则命中</p></div></div>',
         f"<div class=\"card-body\">{_render_chip_list(matched_rules, '当前没有记录到命中规则。')}</div>",
         "</article>",
         '<article class="card span-4">',
@@ -795,23 +825,23 @@ def build_report_html_artifact(payload: dict[str, Any]) -> str:
         f"<div class=\"card-body\">{_render_chip_list(matched_signals, '当前没有记录到攻击信号。')}</div>",
         "</article>",
         '<article class="card span-8">',
-        '<div class="card-head"><div><h2>重点命中与证据</h2><p>包含命中类型、位置、证据片段与来源</p></div></div>',
+        '<div class="card-head"><div><h2>重点命中与证据</h2><p>展示命中类型、位置、来源与证据片段</p></div></div>',
         f"<div class=\"card-body stack\">{_render_payload_hits(payload_hits)}</div>",
         "</article>",
         '<article class="card span-4">',
-        '<div class="card-head"><div><h2>敏感数据痕迹</h2><p>导出报告默认只展示脱敏后的痕迹</p></div></div>',
+        '<div class="card-head"><div><h2>敏感数据痕迹</h2><p>导出件默认仅展示脱敏后的证据片段</p></div></div>',
         f"<div class=\"card-body stack\">{_render_sensitive_hits(sensitive_hits)}</div>",
         "</article>",
         '<article class="card span-5">',
-        '<div class="card-head"><div><h2>执行时间线</h2><p>按北京时间整理任务与报告节点</p></div></div>',
+        '<div class="card-head"><div><h2>执行时间线</h2><p>按北京时间归整任务、事件与报告节点</p></div></div>',
         f"<div class=\"card-body timeline\">{_render_timeline(timeline)}</div>",
         "</article>",
         '<article class="card span-7">',
-        '<div class="card-head"><div><h2>处置建议</h2><p>根据当前结论自动生成的人工处置建议</p></div></div>',
+        '<div class="card-head"><div><h2>处置建议</h2><p>结合当前结论自动生成的处置与加固建议</p></div></div>',
         f"<div class=\"card-body stack\">{_render_recommendations(recommendations)}</div>",
         "</article>",
         '<article class="card span-12">',
-        '<div class="card-head"><div><h2>原始数据附录</h2><p>保留任务输入、执行结果与原始返回，便于复盘</p></div></div>',
+        '<div class="card-head"><div><h2>原始数据附录</h2><p>保留任务输入、执行结果与原始返回，便于复盘取证</p></div></div>',
         f"<div class=\"card-body stack\">{_render_appendix_sections(appendix_sections)}</div>",
         "</article>",
         "</section>",
@@ -1109,13 +1139,13 @@ def _build_timeline(
             return
         items.append({"label": label, "value": text, "detail": detail})
 
-    add_item("任务创建", _format_datetime(task.created_at), "任务入库并等待执行。")
-    add_item("计划执行", _format_datetime(task.scheduled_at), "任务进入调度队列。")
-    add_item("开始执行", _format_datetime(task.started_at), "开始进入执行或运行时回传阶段。")
-    add_item("任务完成", _format_datetime(task.finished_at), "执行结果、事件和报告已归档。")
-    add_item("安全事件记录", _format_datetime(event.created_at) if event else None, "安全事件已写入审计链路。")
-    add_item("报告生成", _format_datetime(report.created_at), "报告记录已创建。")
-    add_item("报告导出", exported_at, "导出为当前报告工件。")
+    add_item("任务创建", _format_datetime(task.created_at), "任务已入库，等待调度或人工执行。")
+    add_item("计划执行", _format_datetime(task.scheduled_at), "任务进入调度窗口，等待执行。")
+    add_item("开始执行", _format_datetime(task.started_at), "任务开始进入执行链或运行时回传链路。")
+    add_item("任务完成", _format_datetime(task.finished_at), "执行结果、事件记录和报告工件已归档。")
+    add_item("安全事件记录", _format_datetime(event.created_at) if event else None, "安全事件已写入审计链路并可用于复盘。")
+    add_item("报告生成", _format_datetime(report.created_at), "报告记录已生成，可继续导出为多种格式。")
+    add_item("报告导出", exported_at, "当前导出件已生成，可用于处置、复盘或汇报。")
     return items
 
 
@@ -1123,6 +1153,7 @@ def _build_recommendations(
     *,
     event: SecurityEvent | None,
     guard_trace: dict[str, Any],
+    ai_review_summary: dict[str, Any],
     payload_hits: list[dict[str, Any]],
     sensitive_hits: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
@@ -1133,22 +1164,28 @@ def _build_recommendations(
         recommendations.append({"title": title, "detail": detail, "tone": tone})
 
     if status == "intercepted":
-        add_item("维持拦截", "本次已被判定为拦截，建议先不要恢复放行，优先复核命中规则与控制面。", "danger")
+        add_item("维持拦截", "当前结论已明确为拦截，建议先不要恢复放行，优先复核命中规则、控制面与原始证据。", "danger")
     elif status == "suspicious":
-        add_item("人工复核", "当前结论为可疑，建议分析员结合命中证据、上游请求链和原始输入做进一步研判。", "warn")
+        add_item("进入人工复核", "当前结论为可疑，建议分析员结合命中证据、上游请求链和原始输入继续研判。", "warn")
     elif status == "allowed":
-        add_item("审计留痕", "本次已放行，但仍建议保留该报告并关注同源后续请求是否出现重复命中。", "safe")
+        add_item("保留审计留痕", "本次已放行，但仍建议保留该报告并关注同源后续请求是否出现重复命中。", "safe")
     else:
         add_item("补充核验", "当前未形成稳定处置结论，建议结合原始数据和运行态链路补充核验。", "info")
 
     if sensitive_hits:
-        add_item("检查脱敏策略", f"检测到 {len(sensitive_hits)} 处敏感数据痕迹，建议检查输出脱敏、日志脱敏与回传字段裁剪策略。", "warn")
+        add_item("检查脱敏策略", f"检测到 {len(sensitive_hits)} 处敏感数据痕迹，建议重点核查输出脱敏、日志脱敏与回传字段裁剪策略。", "warn")
 
     if payload_hits:
-        add_item("固化命中规则", f"已识别 {len(payload_hits)} 项关键命中，建议将高置信命中纳入后续阻断或复核策略。", "info")
+        add_item("固化命中规则", f"已识别 {len(payload_hits)} 项关键命中，建议将高置信命中纳入后续阻断、复核或回归样本。", "info")
 
     if _string_list(guard_trace.get("matched_controls")):
-        add_item("回看授权链", "本报告显示已有执行守卫命中，建议核查授权链是否需要前置到更早的统一代理入口。", "info")
+        add_item("回看授权链", "本报告显示已有执行守卫命中，建议核查授权链是否需要进一步前置到统一代理入口。", "info")
+
+    if _string_list(ai_review_summary.get("adjustments")):
+        add_item("保持规则优先级", "AI 复核曾尝试降低处置等级，但已被规则链拒绝；建议继续保持高风险规则优先级。", "warn")
+
+    if str(ai_review_summary.get("error") or "").strip():
+        add_item("核查研判 AI 可用性", "AI 复核执行失败或返回异常，建议检查研判 AI 的地址、密钥、模型配置与网络连通性。", "warn")
 
     if not recommendations:
         add_item("保持观察", "当前未发现额外异常，建议继续保持样本回归与运行态审计。", "safe")
@@ -1177,27 +1214,181 @@ def _risk_badge(level: str | None) -> dict[str, str]:
     return {"code": key or "unknown", "label": "未分级", "tone": "info"}
 
 
-def _review_badge(guard_trace: dict[str, Any]) -> dict[str, str]:
+def _review_badge(guard_trace: dict[str, Any], event: SecurityEvent | None) -> dict[str, str]:
+    summary = _build_ai_review_summary(guard_trace=guard_trace, event=event)
+    return {
+        "label": str(summary.get("status_label") or "未记录"),
+        "tone": str(summary.get("status_tone") or "info"),
+        "detail": _best_text(str(summary.get("summary") or ""), str(summary.get("detail") or ""), "未记录。"),
+    }
+
+
+def _normalized_event_status(value: Any, fallback: str = "allowed") -> str:
+    key = str(value or "").strip().lower()
+    if key in {"intercepted", "suspicious", "allowed"}:
+        return key
+    return fallback
+
+
+def _normalized_risk_level(value: Any, fallback: str = "medium") -> str:
+    key = str(value or "").strip().lower()
+    if key in {"high", "medium", "low"}:
+        return key
+    return fallback
+
+
+def _event_status_label(value: Any, fallback: str = "allowed") -> str:
+    return _event_status_badge(_normalized_event_status(value, fallback))["label"]
+
+
+def _risk_level_label(value: Any, fallback: str = "medium") -> str:
+    return _risk_badge(_normalized_risk_level(value, fallback))["label"]
+
+
+def _review_adjustment_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("review_cannot_downgrade_status:"):
+        payload = raw.split(":", 1)[1]
+        review_status, _, final_status = payload.partition("->")
+        return f"AI 建议将处置降为{_event_status_label(review_status, 'allowed')}，但规则维持为{_event_status_label(final_status, 'allowed')}。"
+
+    if raw.startswith("review_cannot_downgrade_level:"):
+        payload = raw.split(":", 1)[1]
+        review_level, _, final_level = payload.partition("->")
+        return f"AI 建议将风险降为{_risk_level_label(review_level, 'low')}，但规则维持为{_risk_level_label(final_level, 'medium')}。"
+
+    return _humanize_code(raw)
+
+
+def _review_skip_reason(review_decision: Any) -> str:
+    key = str(review_decision or "").strip().lower()
+    mapping = {
+        "confirmed_by_policy": "规则已直接完成定性，因此未再进入 AI 复核。",
+        "rules_only_mode": "当前策略设置为仅规则判定。",
+        "target_protection_disabled": "该目标未启用 AI 辅助复核。",
+        "review_suspicious_only": "当前事件未进入 AI 复核范围。",
+        "review_ai_api_url_not_configured": "未配置研判 AI 的 API 地址。",
+        "review_ai_api_key_not_configured": "未配置研判 AI 的 API 密钥。",
+        "no_ai_endpoint_configured": "当前没有可用的研判 AI 配置，平台仅按规则链执行。",
+        "review_all_remaining": "当前策略允许对剩余请求触发 AI 复核，但本次未实际进入复核执行。",
+    }
+    return mapping.get(key, "当前记录显示本次未进入 AI 复核。")
+
+
+def _build_ai_review_summary(*, guard_trace: dict[str, Any], event: SecurityEvent | None) -> dict[str, Any]:
     if not guard_trace:
-        return {"label": "未记录", "tone": "info", "detail": "当前报告没有可用的 AI 复核链路数据。"}
+        return {
+            "title": "AI 研判结论",
+            "status_label": "未记录",
+            "status_tone": "info",
+            "opinion_label": "未形成 AI 意见",
+            "opinion_tone": "info",
+            "summary": "当前报告没有可用的 AI 复核链路数据。",
+            "detail": "未记录到可用于说明 AI 复核状态的上下文。",
+            "adjustments": [],
+            "error": "",
+            "result_rules": [],
+            "result_level_label": "未记录",
+            "mode_label": _ai_review_mode_label(guard_trace.get("ai_review_mode")),
+        }
 
-    if bool(guard_trace.get("ai_review_invoked")):
-        return {"label": "已触发", "tone": "warn", "detail": "执行阶段已触发 AI 复核。"}
+    review_status = str(guard_trace.get("ai_review_status") or "").strip().lower()
+    final_status_code = _normalized_event_status(event.status if event else "", "allowed")
+    ai_status_code = _normalized_event_status(guard_trace.get("ai_review_result_status"), final_status_code)
+    ai_level_code = _normalized_risk_level(guard_trace.get("ai_review_result_level"), "medium")
+    adjustments = [
+        label
+        for label in (_review_adjustment_label(item) for item in _string_list(guard_trace.get("ai_review_adjustments")))
+        if label
+    ]
+    error = _clip_text(str(guard_trace.get("ai_review_error") or "").strip(), 180)
+    result_rules = [_policy_label(item) for item in _string_list(guard_trace.get("ai_review_result_rules"))]
+    mode_label = _ai_review_mode_label(guard_trace.get("ai_review_mode"))
 
-    review_decision = str(guard_trace.get("review_decision") or "").strip().lower()
-    if review_decision == "no_ai_endpoint_configured":
-        return {"label": "未触发", "tone": "info", "detail": "当前未配置可用 AI 目标，执行链已退化为规则判定。"}
-    if review_decision == "target_protection_disabled":
-        return {"label": "未启用", "tone": "info", "detail": "目标保护未启用 AI 复核。"}
-    if review_decision == "confirmed_by_policy":
-        return {"label": "策略直断", "tone": "danger", "detail": "当前已被策略明确判定，无需再进入 AI 复核。"}
-    if review_decision == "rules_only_mode":
-        return {"label": "规则模式", "tone": "info", "detail": "当前策略配置为仅规则判定。"}
-    if review_decision == "review_suspicious_only":
-        return {"label": "按需复核", "tone": "info", "detail": "仅在规则判定为可疑时进入 AI 复核。"}
-    if review_decision == "review_all_remaining":
-        return {"label": "全量复核", "tone": "info", "detail": "剩余请求将进入 AI 复核。"}
-    return {"label": "未触发", "tone": "info", "detail": "当前记录显示未进入 AI 复核。"}
+    if review_status == "completed":
+        if adjustments:
+            return {
+                "title": "AI 研判结论",
+                "status_label": "AI 已完成复核",
+                "status_tone": "warn",
+                "opinion_label": f"AI 认为应判为{_event_status_label(ai_status_code, final_status_code)}",
+                "opinion_tone": _event_status_badge(ai_status_code)["tone"],
+                "summary": f"AI 认为本次请求应判为{_event_status_label(ai_status_code, final_status_code)}，但平台未接受其降级意见。",
+                "detail": f"最终处置仍为{_event_status_label(final_status_code, final_status_code)}，规则保护优先级高于 AI 的降级建议。",
+                "adjustments": adjustments,
+                "error": error,
+                "result_rules": result_rules,
+                "result_level_label": _risk_level_label(ai_level_code, "medium"),
+                "mode_label": mode_label,
+            }
+
+        detail = "AI 复核意见已进入最终判定。"
+        if ai_status_code != final_status_code:
+            detail = f"AI 侧意见与最终处置存在差异，当前最终处置为{_event_status_label(final_status_code, final_status_code)}。"
+        return {
+            "title": "AI 研判结论",
+            "status_label": "AI 已完成复核",
+            "status_tone": "safe",
+            "opinion_label": f"AI 认为应判为{_event_status_label(ai_status_code, final_status_code)}",
+            "opinion_tone": _event_status_badge(ai_status_code)["tone"],
+            "summary": f"AI 认为本次请求应判为{_event_status_label(ai_status_code, final_status_code)}。",
+            "detail": f"{detail} AI 侧风险等级为{_risk_level_label(ai_level_code, 'medium')}。",
+            "adjustments": adjustments,
+            "error": error,
+            "result_rules": result_rules,
+            "result_level_label": _risk_level_label(ai_level_code, "medium"),
+            "mode_label": mode_label,
+        }
+
+    if review_status == "fallback_to_rules":
+        return {
+            "title": "AI 研判结论",
+            "status_label": "AI 复核失败",
+            "status_tone": "warn",
+            "opinion_label": "未形成有效 AI 意见",
+            "opinion_tone": "warn",
+            "summary": "AI 复核执行失败，平台已自动回退为规则判定。",
+            "detail": f"最终处置为{_event_status_label(final_status_code, final_status_code)}，本次未采用 AI 输出作为最终结论。",
+            "adjustments": adjustments,
+            "error": error,
+            "result_rules": result_rules,
+            "result_level_label": _risk_level_label(ai_level_code, "medium"),
+            "mode_label": mode_label,
+        }
+
+    if review_status == "skipped" or not bool(guard_trace.get("ai_review_invoked")):
+        return {
+            "title": "AI 研判结论",
+            "status_label": "AI 未介入",
+            "status_tone": "info",
+            "opinion_label": "未形成 AI 意见",
+            "opinion_tone": "info",
+            "summary": "本次事件没有进入 AI 复核。",
+            "detail": _review_skip_reason(guard_trace.get("review_decision")),
+            "adjustments": adjustments,
+            "error": error,
+            "result_rules": result_rules,
+            "result_level_label": _risk_level_label(ai_level_code, "medium"),
+            "mode_label": mode_label,
+        }
+
+    return {
+        "title": "AI 研判结论",
+        "status_label": "AI 状态未明确",
+        "status_tone": "info",
+        "opinion_label": "未形成稳定 AI 意见",
+        "opinion_tone": "info",
+        "summary": "报告中记录了 AI 复核链路，但状态不足以形成稳定结论。",
+        "detail": _best_text(_review_skip_reason(guard_trace.get("review_decision")), "建议结合原始响应与附录继续核验。"),
+        "adjustments": adjustments,
+        "error": error,
+        "result_rules": result_rules,
+        "result_level_label": _risk_level_label(ai_level_code, "medium"),
+        "mode_label": mode_label,
+    }
 
 
 def _report_type_label(value: str | None) -> str:
@@ -1320,12 +1511,12 @@ def _guard_source_label(value: Any) -> str:
 
 def _status_explanation(code: str) -> str:
     if code == "intercepted":
-        return "当前请求已被平台明确拦截，不建议直接恢复执行。"
+        return "当前请求已被平台明确拦截，建议先完成复核再决定是否恢复执行。"
     if code == "suspicious":
-        return "当前请求被标记为可疑，建议人工复核后再决定是否放行。"
+        return "当前请求被标记为可疑，建议结合证据完成人工复核后再决定是否放行。"
     if code == "allowed":
-        return "当前请求已放行，但仍建议保留审计记录以便追踪。"
-    return "当前尚未形成稳定的事件处置结论。"
+        return "当前请求已放行，但建议保留审计记录并持续观察同源后续请求。"
+    return "当前尚未形成稳定的事件处置结论，建议结合执行链继续核验。"
 
 
 def _collect_rules(*, event: SecurityEvent | None, guard_trace: dict[str, Any]) -> list[str]:
@@ -1401,7 +1592,7 @@ def _build_chinese_summary(
     event: SecurityEvent | None,
     status_badge: dict[str, str],
     risk_badge: dict[str, str],
-    review_badge: dict[str, str],
+    ai_review_summary: dict[str, Any],
     payload_hits: list[dict[str, Any]],
     sensitive_hits: list[dict[str, Any]],
 ) -> str:
@@ -1418,13 +1609,16 @@ def _build_chinese_summary(
         parts.append(outcome_text)
 
     if payload_hits or sensitive_hits:
-        parts.append(f"本次共识别 {len(payload_hits)} 项关键命中，并发现 {len(sensitive_hits)} 项敏感数据痕迹。")
+        parts.append(f"本次共归集 {len(payload_hits)} 项关键命中，并识别出 {len(sensitive_hits)} 项敏感数据痕迹。")
     else:
         parts.append("当前未识别到额外的关键命中或敏感数据痕迹。")
 
-    review_label = str(review_badge.get("label") or "").strip()
-    if review_label and review_label not in {"未记录", "-"}:
-        parts.append(f"AI 复核状态：{review_label}。")
+    review_status = str(ai_review_summary.get("status_label") or "").strip()
+    review_opinion = str(ai_review_summary.get("opinion_label") or "").strip()
+    if review_status and review_status not in {"未记录", "-"}:
+        parts.append(f"AI 复核状态：{review_status}。")
+    if review_opinion and review_opinion not in {"未形成 AI 意见", "未记录", "-"}:
+        parts.append(f"{review_opinion}。")
 
     return "".join(parts)
 
@@ -1654,6 +1848,64 @@ def _render_trace_rows(items: list[dict[str, Any]]) -> str:
             f'<div class="row-detail">{escape(str(item.get("detail") or "-"))}</div>'
             "</div>"
         )
+    return "".join(parts)
+
+
+def _render_ai_review_summary(item: dict[str, Any]) -> str:
+    if not item:
+        return '<p class="empty">当前没有可展示的 AI 研判信息。</p>'
+
+    status_tone = escape(str(item.get("status_tone") or "info"))
+    opinion_tone = escape(str(item.get("opinion_tone") or "info"))
+    parts = [
+        f'<div class="trace-row tone-{status_tone}">'
+        '<div class="row-top">'
+        '<strong>AI 复核状态</strong>'
+        f'<span class="pill tone-{status_tone}">{escape(str(item.get("status_label") or "-"))}</span>'
+        "</div>"
+        f'<div class="row-detail">{escape(str(item.get("summary") or "-"))}</div>'
+        f'<div class="row-detail">{escape(str(item.get("detail") or "-"))}</div>'
+        "</div>",
+        f'<div class="trace-row tone-{opinion_tone}">'
+        '<div class="row-top">'
+        '<strong>AI 研判意见</strong>'
+        f'<span class="pill tone-{opinion_tone}">{escape(str(item.get("opinion_label") or "-"))}</span>'
+        "</div>"
+        f'<div class="row-detail">AI 风险等级：{escape(str(item.get("result_level_label") or "-"))} / 复核策略：{escape(str(item.get("mode_label") or "-"))}</div>'
+        "</div>",
+    ]
+
+    result_rules = [str(value).strip() for value in item.get("result_rules") or [] if str(value).strip()]
+    if result_rules:
+        result_rules_html = "".join(f'<span class="chip">{escape(rule)}</span>' for rule in result_rules)
+        parts.append(
+            '<div class="trace-row tone-info">'
+            '<div class="row-top"><strong>AI 侧命中规则</strong><span class="pill tone-info">'
+            f'{escape(str(len(result_rules)))} 项</span></div>'
+            f'<div class="row-meta">{result_rules_html}</div>'
+            "</div>"
+        )
+
+    adjustments = [str(value).strip() for value in item.get("adjustments") or [] if str(value).strip()]
+    if adjustments:
+        adjustments_text = "；".join(escape(text) for text in adjustments)
+        parts.append(
+            '<div class="trace-row tone-warn">'
+            '<div class="row-top"><strong>规则修正</strong><span class="pill tone-warn">'
+            f'{escape(str(len(adjustments)))} 项</span></div>'
+            f'<div class="row-detail">{adjustments_text}</div>'
+            "</div>"
+        )
+
+    error = str(item.get("error") or "").strip()
+    if error:
+        parts.append(
+            '<div class="trace-row tone-danger">'
+            '<div class="row-top"><strong>失败原因</strong><span class="pill tone-danger">需检查</span></div>'
+            f'<div class="row-detail">{escape(error)}</div>'
+            "</div>"
+        )
+
     return "".join(parts)
 
 

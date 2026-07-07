@@ -20,6 +20,12 @@ import { redactSensitiveText } from '../services/redaction'
 
 type Tone = 'safe' | 'warn' | 'danger' | 'info'
 type EventStatus = SecurityEventStatus
+type AiReviewSummary = {
+  label: string
+  tone: Tone
+  detail: string
+  note?: string
+}
 type EventFilter = '全部' | '高危' | '可疑' | '已拦截' | '已放行'
 
 const router = useRouter()
@@ -83,7 +89,22 @@ const resolvedEventDetail = computed<SecurityEventDetail | null>(() => {
   }
 })
 
-const selectedEventAttackSummary = computed(() => buildEventAttackSummary(resolvedEventDetail.value ?? selectedEvent.value))
+const selectedEventAttackSummary = computed(() =>
+  buildDisplayEventAttackSummary(resolvedEventDetail.value ?? selectedEvent.value)
+)
+const aiReviewSummaryByEventId = computed<Record<number, AiReviewSummary>>(() => {
+  const output: Record<number, AiReviewSummary> = {}
+  for (const item of allEvents.value) {
+    const summary = buildEventAiReviewSummary(item)
+    if (summary) {
+      output[item.id] = summary
+    }
+  }
+  return output
+})
+const selectedEventAiReviewSummary = computed(() =>
+  buildEventAiReviewSummary(resolvedEventDetail.value ?? selectedEvent.value)
+)
 
 watch(
   activeFilter,
@@ -158,6 +179,164 @@ function buildEventAttackSummary(
     hitRules: event?.hit_rules ?? [],
     guardTrace: event?.guard_trace ?? null
   })
+}
+
+function isAllowedEvent(status?: string | null) {
+  return normalizeEventStatus(status) === 'allowed'
+}
+
+function eventDisplayTitle(
+  event?: Pick<SecurityEventSummary, 'status' | 'event_type'> | null
+) {
+  if (isAllowedEvent(event?.status)) {
+    return '已放行事件'
+  }
+  return eventTypeLabel(event?.event_type ?? '')
+}
+
+function buildVisibleEventAttackSummary(
+  event?: Pick<SecurityEventSummary, 'status' | 'event_type' | 'hit_rules' | 'guard_trace'> | null
+) {
+  const summary = buildEventAttackSummary(event)
+  if (!isAllowedEvent(event?.status)) {
+    return summary
+  }
+
+  return {
+    ...summary,
+    label: '已放行事件',
+    supportText: '当前事件已放行，因此不展示攻击类型。',
+    brief: '已放行'
+  }
+}
+
+function buildDisplayEventAttackSummary(
+  event?: Pick<SecurityEventSummary, 'status' | 'event_type' | 'hit_rules' | 'guard_trace'> | null
+) {
+  const summary = buildEventAttackSummary(event)
+  if (!isAllowedEvent(event?.status)) {
+    return summary
+  }
+
+  return {
+    ...summary,
+    label: `可能为：${summary.label}`,
+  }
+}
+
+function normalizeAiReviewStatus(status?: string | null) {
+  return (status || '').trim().toLowerCase()
+}
+
+function normalizeAiReviewResultStatus(status?: string | null, fallback = 'allowed') {
+  const normalized = normalizeEventStatus(status)
+  if (normalized === 'intercepted' || normalized === 'suspicious' || normalized === 'allowed') {
+    return normalized
+  }
+  return fallback
+}
+
+function formatAiReviewAdjustment(adjustment?: string | null) {
+  const raw = (adjustment || '').trim()
+  if (!raw) {
+    return ''
+  }
+
+  if (raw.startsWith('review_cannot_downgrade_status:')) {
+    const payload = raw.slice('review_cannot_downgrade_status:'.length)
+    const [reviewStatus, finalStatus] = payload.split('->')
+    return `AI建议${eventLabel(reviewStatus || '')}，规则维持${eventLabel(finalStatus || '')}`
+  }
+
+  if (raw.startsWith('review_cannot_downgrade_level:')) {
+    const payload = raw.slice('review_cannot_downgrade_level:'.length)
+    const [reviewLevel, finalLevel] = payload.split('->')
+    return `AI建议风险降为${levelLabel(reviewLevel || '')}，规则维持${levelLabel(finalLevel || '')}`
+  }
+
+  return raw.replace(/_/g, ' ')
+}
+
+function formatAiReviewSkipReason(reviewDecision?: string | null) {
+  const decision = (reviewDecision || '').trim().toLowerCase()
+  if (decision === 'confirmed_by_policy') return '规则已直接定性，未再交给 AI'
+  if (decision === 'rules_only_mode') return '当前策略仅使用规则判定'
+  if (decision === 'target_protection_disabled') return '该目标未启用辅助研判'
+  if (decision === 'review_suspicious_only') return '当前事件未进入 AI 复核范围'
+  if (decision === 'review_ai_api_url_not_configured') return '未配置研判 API 地址'
+  if (decision === 'review_ai_api_key_not_configured') return '未配置研判 API 密钥'
+  return '本次未触发 AI 复核'
+}
+
+function formatAiReviewError(error?: string | null) {
+  const content = displayText(error)
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!content) {
+    return ''
+  }
+  return content.length > 80 ? `${content.slice(0, 80)}...` : content
+}
+
+function formatRuleVerdictLabel(verdict?: string | null) {
+  const value = (verdict || '').trim().toLowerCase()
+  if (value === 'blocked') return '高风险拦截'
+  if (value === 'suspicious') return '可疑待复核'
+  if (value === 'clean') return '未见明确攻击'
+  return verdict || '未记录'
+}
+
+function buildEventAiReviewSummary(
+  event?: Pick<SecurityEventSummary, 'status' | 'guard_trace'> | null
+): AiReviewSummary | null {
+  const trace = event?.guard_trace
+  if (!trace) {
+    return null
+  }
+
+  const finalStatus = normalizeAiReviewResultStatus(event?.status, 'allowed')
+  const reviewStatus = normalizeAiReviewStatus(trace.ai_review_status)
+  const aiOpinion = normalizeAiReviewResultStatus(trace.ai_review_result_status, finalStatus)
+  const firstAdjustment = formatAiReviewAdjustment(trace.ai_review_adjustments?.[0])
+  const errorText = formatAiReviewError(trace.ai_review_error)
+
+  if (reviewStatus === 'completed') {
+    if (firstAdjustment) {
+      return {
+        label: `AI认为：${eventLabel(aiOpinion)}`,
+        tone: eventTone(aiOpinion),
+        detail: firstAdjustment,
+        note: `最终仍为${eventLabel(finalStatus)}`
+      }
+    }
+
+    return {
+      label: `AI认为：${eventLabel(aiOpinion)}`,
+      tone: eventTone(aiOpinion),
+      detail: aiOpinion === finalStatus ? '复核意见已进入最终判定' : `最终执行为${eventLabel(finalStatus)}`,
+      note: trace.ai_review_result_level ? `AI风险级别：${levelLabel(trace.ai_review_result_level)}` : undefined
+    }
+  }
+
+  if (reviewStatus === 'fallback_to_rules') {
+    return {
+      label: 'AI复核失败',
+      tone: 'warn',
+      detail: '已回退为规则判定',
+      note: errorText || `最终仍为${eventLabel(finalStatus)}`
+    }
+  }
+
+  if (reviewStatus === 'skipped' || !trace.ai_review_invoked) {
+    return {
+      label: 'AI未介入',
+      tone: 'info',
+      detail: formatAiReviewSkipReason(trace.review_decision),
+      note: trace.rule_verdict ? `规则判定：${formatRuleVerdictLabel(trace.rule_verdict)}` : undefined
+    }
+  }
+
+  return null
 }
 
 function normalizeEventLevel(level: string) {
@@ -456,7 +635,7 @@ function nextPage() {
               <button class="event-workitem-focus" type="button" @click="focusEvent(item.id)">
                 <div class="event-workitem-head">
                   <div class="event-workitem-copy">
-                    <h4>{{ eventTypeLabel(item.event_type) }}</h4>
+                    <h4>{{ eventDisplayTitle(item) }}</h4>
                     <p class="event-workitem-source">{{ item.source }} -> {{ item.target }}</p>
                   </div>
                   <div class="event-workitem-meta">
@@ -468,8 +647,15 @@ function nextPage() {
                 </div>
 
                 <div class="event-workitem-trigger">
-                  <strong>{{ buildEventAttackSummary(item).label }}</strong>
-                  <span>{{ buildEventAttackSummary(item).brief }}</span>
+                  <strong>{{ buildDisplayEventAttackSummary(item).label }}</strong>
+                  <span>{{ buildDisplayEventAttackSummary(item).brief }}</span>
+                </div>
+                <div v-if="aiReviewSummaryByEventId[item.id]" class="event-workitem-ai">
+                  <StatusPill
+                    :label="aiReviewSummaryByEventId[item.id].label"
+                    :tone="aiReviewSummaryByEventId[item.id].tone"
+                  />
+                  <span>{{ aiReviewSummaryByEventId[item.id].detail }}</span>
                 </div>
               </button>
             </div>
@@ -540,7 +726,7 @@ function nextPage() {
           <article class="info-card">
             <div class="card-head">
               <div>
-                <h4>{{ eventTypeLabel(selectedEvent.event_type) }}</h4>
+                <h4>{{ eventDisplayTitle(selectedEvent) }}</h4>
               </div>
               <StatusPill :label="eventLabel(selectedEvent.status)" :tone="eventTone(selectedEvent.status)" />
             </div>
@@ -617,6 +803,26 @@ function nextPage() {
             <div v-if="detailError" class="empty-state">
               <p>详情加载失败，已先按列表数据归类：{{ detailError }}</p>
               <button class="ghost-button" type="button" @click="selectedEventId && loadEventDetail(selectedEventId)">重试</button>
+            </div>
+          </article>
+          <article v-if="selectedEventAiReviewSummary" class="field-card field-card-compact">
+            <div class="field-head">
+              <div>
+                <h4>AI 研判</h4>
+              </div>
+              <small class="field-count">简要复核结论</small>
+            </div>
+            <div class="token-list">
+              <StatusPill
+                :label="selectedEventAiReviewSummary.label"
+                :tone="selectedEventAiReviewSummary.tone"
+              />
+            </div>
+            <div class="detail-block">
+              <p class="security-summary-note">{{ selectedEventAiReviewSummary.detail }}</p>
+              <p v-if="selectedEventAiReviewSummary.note" class="security-summary-subnote">
+                {{ selectedEventAiReviewSummary.note }}
+              </p>
             </div>
           </article>
         </div>

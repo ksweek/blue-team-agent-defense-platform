@@ -64,6 +64,7 @@ from ...services.policy_enforcer import (
     authorize_runtime_action,
     authorize_task_preflight,
     serialize_authorization_decision,
+    serialize_authorization_decision_for_storage,
 )
 from ...services.security import decode_access_token, hash_password
 from ...services.task_runner import record_task_outcome
@@ -79,6 +80,7 @@ from ...services.runtime_registry import (
     verify_runtime_poll_secret,
     verify_runtime_secret,
 )
+from ...services.request_security import enforce_rate_limit, websocket_message_limit_bytes
 from ...services.runtime_dispatch import claim_next_runtime_command, complete_runtime_command, serialize_runtime_dispatch_command
 
 router = APIRouter()
@@ -308,6 +310,33 @@ def _token_matches(expected: str, actual: Optional[str]) -> bool:
 
 def _matches_service_token(value: Optional[str]) -> bool:
     return _token_matches(settings.gateway_api_token, value)
+
+
+async def _receive_ws_json_limited(websocket: WebSocket) -> dict[str, Any]:
+    message = await websocket.receive()
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code", 1000))
+
+    raw_bytes: bytes
+    if message.get("text") is not None:
+        raw_text = str(message.get("text") or "")
+        raw_bytes = raw_text.encode("utf-8")
+    else:
+        raw_bytes = bytes(message.get("bytes") or b"")
+        try:
+            raw_text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("WebSocket payload must be UTF-8 JSON.") from exc
+
+    if len(raw_bytes) > websocket_message_limit_bytes():
+        raise ValueError("WebSocket payload too large.")
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("WebSocket payload must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("WebSocket payload must be a JSON object.")
+    return payload
 
 
 def _gateway_headers(
@@ -2249,7 +2278,7 @@ async def gateway_chat_completions_ws(websocket: WebSocket):
     source_ip = websocket.client.host if websocket.client else "-"
 
     try:
-        raw_body = await websocket.receive_json()
+        raw_body = await _receive_ws_json_limited(websocket)
         payload = GatewayChatCompletionsRequest.model_validate(raw_body)
     except Exception as exc:
         await _ws_send_error(websocket, request_id=request_id, status_code=400, code="invalid_request", message=str(exc))
@@ -2461,7 +2490,7 @@ async def gateway_responses_ws(websocket: WebSocket):
     source_ip = websocket.client.host if websocket.client else "-"
 
     try:
-        raw_body = await websocket.receive_json()
+        raw_body = await _receive_ws_json_limited(websocket)
         payload = GatewayResponsesRequest.model_validate(raw_body)
     except Exception as exc:
         await _ws_send_error(websocket, request_id=request_id, status_code=400, code="invalid_request", message=str(exc))
@@ -2628,7 +2657,7 @@ async def gateway_agents_run_ws(websocket: WebSocket):
     source_ip = websocket.client.host if websocket.client else "-"
 
     try:
-        raw_body = await websocket.receive_json()
+        raw_body = await _receive_ws_json_limited(websocket)
         payload = GatewayAgentRunRequest.model_validate(raw_body)
     except Exception as exc:
         await _ws_send_error(websocket, request_id=request_id, status_code=400, code="invalid_request", message=str(exc))
@@ -2776,8 +2805,16 @@ async def gateway_agents_run_ws(websocket: WebSocket):
 @router.post("/runtime/register")
 def gateway_runtime_register(
     payload: RuntimeRegisterRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    enforce_rate_limit(
+        request,
+        bucket="runtime-register",
+        limit=settings.runtime_register_rate_limit_attempts,
+        window_seconds=settings.runtime_register_rate_limit_window_seconds,
+        secret_value=payload.enrollment_token,
+    )
     try:
         token = resolve_enrollment_token(db, payload.enrollment_token)
     except ValueError as exc:
@@ -3055,7 +3092,7 @@ def gateway_runtime_authorize(
     params = dict(item.params)
     runtime_state = dict(params.get("runtime") or {})
     runtime_state["authorization_at"] = format_beijing(now)
-    runtime_state["authorization_result"] = serialized_decision
+    runtime_state["authorization_result"] = serialize_authorization_decision_for_storage(decision)
     if issued_ticket is not None:
         runtime_state["mcp_execution_ticket"] = serialize_mcp_execution_ticket(issued_ticket)
     params["runtime"] = runtime_state

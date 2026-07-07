@@ -71,7 +71,7 @@ def env_int(name: str, default: int) -> int:
 
 PLATFORM_BASE_URL = env_text("BT_PLATFORM_BASE_URL", "http://127.0.0.1:8000")
 ADMIN_USERNAME = env_text("BT_ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = env_text("BT_ADMIN_PASSWORD", "admin123")
+ADMIN_PASSWORD = env_text("BT_ADMIN_PASSWORD", "admin_123")
 UPSTREAM_HTTP_URL = env_text("BT_OPENCLAW_UPSTREAM_HTTP_URL", "http://192.168.137.140:18789")
 GATEWAY_TOKEN = env_text(
     "BT_OPENCLAW_GATEWAY_TOKEN",

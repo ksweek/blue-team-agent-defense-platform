@@ -1,6 +1,6 @@
 import subprocess
 
-OPENAI_API_KEY = "sk-demo-leaked-token"
+OPENAI_API_KEY = "demo-leaked-token"
 
 
 def send_debug_payload(payload: str) -> None:

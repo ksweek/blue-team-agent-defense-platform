@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BrandLogo from '../components/BrandLogo.vue'
 import SidebarIcon from '../components/SidebarIcon.vue'
 import { navSections } from '../data/platform'
 import { authState, logout } from '../services/auth'
-import { api } from '../services/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,46 +23,17 @@ const visibleNavSections = computed(() => {
 })
 
 const activeSectionTitle = computed(() =>
-  visibleNavSections.value.find((section) => section.items.some((item) => isActive(item.to)))?.title ?? '主入口'
+  visibleNavSections.value.find((section) => section.items.some((item) => isActive(item.to)))?.title ?? '导航'
 )
 
 const sessionRoles = computed(() =>
   authState.user?.roles.length ? authState.user.roles.join(' / ') : '未登录'
 )
 
-const dashboardOverview = ref<null | {
-  attack_count: number
-  blocked_count: number
-  enabled_defense_count: number
-  high_risk_event_count: number
-  active_task_count: number
-}>(null)
-
-const dashboardTopStats = computed(() => {
-  if (!dashboardOverview.value) {
-    return []
-  }
-
-  return [
-    { label: '攻击', value: dashboardOverview.value.attack_count, tone: 'danger' },
-    { label: '拦截', value: dashboardOverview.value.blocked_count, tone: 'safe' },
-    { label: '高危', value: dashboardOverview.value.high_risk_event_count, tone: 'warn' },
-    { label: '防线', value: dashboardOverview.value.enabled_defense_count, tone: 'info' },
-    { label: '活跃', value: dashboardOverview.value.active_task_count, tone: 'warn' },
-  ] as const
+const userInitial = computed(() => {
+  const raw = authState.user?.real_name?.trim() || authState.user?.username?.trim() || 'G'
+  return raw.slice(0, 1).toUpperCase()
 })
-
-watch(
-  () => route.path,
-  async () => {
-    try {
-      dashboardOverview.value = await api.dashboardOverview()
-    } catch {
-      dashboardOverview.value = null
-    }
-  },
-  { immediate: true },
-)
 
 function isActive(path: string) {
   if (path === '/') {
@@ -81,7 +51,7 @@ function handleLogout() {
 <template>
   <div class="layout-shell">
     <aside class="sidebar">
-      <div class="sidebar-hero">
+      <div class="sidebar-brand-shell">
         <div class="brand">
           <BrandLogo class="brand-mark" />
           <div class="brand-copy">
@@ -92,53 +62,43 @@ function handleLogout() {
       </div>
 
       <div class="sidebar-scroll">
-        <section
-          v-for="section in visibleNavSections"
-          :key="section.title"
-          class="nav-section"
-        >
-          <p v-if="visibleNavSections.length > 1" class="sidebar-section-title">{{ section.title }}</p>
+        <div class="sidebar-nav-stack">
+          <section
+            v-for="section in visibleNavSections"
+            :key="section.title"
+            class="sidebar-group"
+          >
+            <header class="sidebar-group-head">
+              <span class="sidebar-group-icon">
+                <SidebarIcon :name="section.icon" />
+              </span>
+              <strong class="sidebar-group-title">{{ section.title }}</strong>
+            </header>
 
-          <nav class="nav-list">
-            <RouterLink
-              v-for="item in section.items"
-              :key="item.label"
-              :class="['nav-item', { active: isActive(item.to) }]"
-              :to="item.to"
-            >
-              <span class="nav-icon">
-                <SidebarIcon :name="item.icon" />
-              </span>
-              <span class="nav-text">
-                <span class="nav-title">{{ item.label }}</span>
-              </span>
-            </RouterLink>
-          </nav>
-        </section>
+            <nav class="sidebar-subnav">
+              <RouterLink
+                v-for="item in section.items"
+                :key="item.label"
+                :class="['sidebar-subnav-item', { active: isActive(item.to) }]"
+                :to="item.to"
+              >
+                <span class="sidebar-subnav-dot" />
+                <span class="sidebar-subnav-label">{{ item.label }}</span>
+              </RouterLink>
+            </nav>
+          </section>
+        </div>
       </div>
 
       <div class="sidebar-footer">
-        <div v-if="dashboardTopStats.length" class="sidebar-runtime-card">
-          <div class="sidebar-runtime-head">
-            <strong>运行态总览</strong>
-            <span>实时</span>
-          </div>
-          <div class="sidebar-runtime-grid">
-            <article
-              v-for="item in dashboardTopStats"
-              :key="item.label"
-              :class="['sidebar-runtime-stat', `tone-${item.tone}`, { wide: item.label === '活跃' }]"
-            >
-              <span>{{ item.label }}</span>
-              <strong>{{ item.value }}</strong>
-            </article>
-          </div>
-        </div>
-
         <div class="sidebar-user">
-          <strong class="sidebar-user-name">{{ authState.user?.real_name ?? '未登录' }}</strong>
-          <p class="sidebar-user-role">{{ authState.user?.username ?? '-' }} / {{ sessionRoles }}</p>
-          <button class="ghost-button sidebar-logout" type="button" @click="handleLogout">退出登录</button>
+          <span class="sidebar-user-avatar">{{ userInitial }}</span>
+          <div class="sidebar-user-copy">
+            <span class="sidebar-user-kicker">当前会话</span>
+            <strong class="sidebar-user-name">{{ authState.user?.real_name ?? '未登录' }}</strong>
+            <p class="sidebar-user-role">{{ authState.user?.username ?? '-' }} / {{ sessionRoles }}</p>
+          </div>
+          <button class="ghost-button sidebar-user-action" type="button" @click="handleLogout">退出</button>
         </div>
       </div>
     </aside>
